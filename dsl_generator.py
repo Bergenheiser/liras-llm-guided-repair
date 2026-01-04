@@ -1,7 +1,3 @@
-pytrh"""
-DSL Generator with Gemini API via Vertex AI
-Automates the generation and refinement of domain-specific language code
-"""
 
 import os
 import vertexai
