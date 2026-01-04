@@ -75,12 +75,6 @@ DSL Generator with Gemini API via Vertex AI - Automates the generation and refin
 pip install -r requirements.txt
 ```
 
-If `requirements.txt` doesn't exist, install manually:
-
-```bash
-pip install google-cloud-aiplatform vertexai
-```
-
 ### 5. Run the Generator
 
 ```bash
