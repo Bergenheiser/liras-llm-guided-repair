@@ -164,6 +164,60 @@ class DSLGenerator:
             print("Aborted by user.")
             exit(0)
     
+    def _extract_dsl_code(self, response_text: str) -> str:
+        """
+        Extract clean DSL code from AI response, removing markdown formatting and explanations
+        
+        Args:
+            response_text: Raw response from the AI
+            
+        Returns:
+            Clean DSL code without markdown or explanations
+        """
+        # Remove markdown code blocks (```xtext ... ``` or ```plaintext ... ```)
+        import re
+        
+        # Try to find code within markdown code blocks
+        code_block_pattern = r'```(?:xtext|plaintext|dsl)?\s*\n(.*?)\n```'
+        matches = re.findall(code_block_pattern, response_text, re.DOTALL)
+        
+        if matches:
+            # Use the first code block found
+            code = matches[0]
+        else:
+            # No markdown blocks found, use the entire response
+            code = response_text
+        
+        # Remove any leading/trailing whitespace from each line
+        lines = code.split('\n')
+        
+        # Find the minimum indentation (excluding empty lines)
+        min_indent = float('inf')
+        for line in lines:
+            if line.strip():  # Skip empty lines
+                indent = len(line) - len(line.lstrip())
+                min_indent = min(min_indent, indent)
+        
+        # Remove the minimum indentation from all lines
+        if min_indent != float('inf'):
+            dedented_lines = []
+            for line in lines:
+                if line.strip():  # Non-empty line
+                    dedented_lines.append(line[min_indent:])
+                else:  # Empty line
+                    dedented_lines.append('')
+            code = '\n'.join(dedented_lines)
+        
+        # Remove common reasoning/explanation sections that might appear after code
+        # Look for patterns like "**Reasoning", "Reasoning:", "Explanation:", etc.
+        reasoning_pattern = r'\n\s*\*?\*?[Rr]easoning.*$'
+        code = re.split(reasoning_pattern, code, flags=re.DOTALL)[0]
+        
+        explanation_pattern = r'\n\s*\*?\*?[Ee]xplanation.*$'
+        code = re.split(explanation_pattern, code, flags=re.DOTALL)[0]
+        
+        return code.strip()
+    
     def refine_with_error(self, error_message: str) -> str:
         """
         Send compilation error back to the API for refinement
@@ -183,6 +237,7 @@ ERROR:
 {error_message}
 
 Please analyze the error and generate a corrected version of the DSL code that fixes this issue.
+Provide ONLY the corrected DSL code without any explanations or markdown formatting.
 """
         
         print("\n=== Sending error feedback to Gemini ===")
@@ -190,7 +245,7 @@ Please analyze the error and generate a corrected version of the DSL code that f
         print("\n" + "="*50 + "\n")
         
         response = self.chat.send_message(refinement_prompt)
-        return response.text
+        return self._extract_dsl_code(response.text)
     
     def save_result(self, dsl_code: str, iteration: int = 0, success: bool = False):
         """
@@ -267,11 +322,12 @@ Please analyze the error and generate a corrected version of the DSL code that f
         
         # Start conversation and get initial DSL code
         try:
-            dsl_code = self.start_conversation(
+            response_text = self.start_conversation(
                 config['system_prompt'],
                 config['shots'],
                 config['scenario']
             )
+            dsl_code = self._extract_dsl_code(response_text)
             print("\n=== GENERATED DSL CODE ===")
             print(dsl_code)
             print("\n" + "="*60 + "\n")
