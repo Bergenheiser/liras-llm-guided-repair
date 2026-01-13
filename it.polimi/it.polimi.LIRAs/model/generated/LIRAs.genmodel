@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<genmodel:GenModel xmi:version="2.0" xmlns:xmi="http://www.omg.org/XMI" xmlns:ecore="http://www.eclipse.org/emf/2002/Ecore"
+    xmlns:genmodel="http://www.eclipse.org/emf/2002/GenModel" copyrightText="generated  by Xtext 2.41.0" modelDirectory="/it.polimi.LIRAs/src-gen"
+    modelPluginID="it.polimi.LIRAs" forceOverwrite="true" modelName="LIRAs" updateClasspath="false"
+    rootExtendsClass="org.eclipse.emf.ecore.impl.MinimalEObjectImpl$Container" complianceLevel="17.0"
+    copyrightFields="false" runtimeVersion="2.36">
+  <genPackages prefix="LIRAs" basePackage="it.polimi" disposableProviderFactory="true"
+      fileExtensions="LIRAs" ecorePackage="LIRAs.ecore#/">
+    <genClasses ecoreClass="LIRAs.ecore#//Model">
+      <genFeatures property="None" children="true" createChild="true" ecoreFeature="ecore:EReference LIRAs.ecore#//Model/pattern"/>
+      <genFeatures property="None" children="true" createChild="true" ecoreFeature="ecore:EReference LIRAs.ecore#//Model/sequence"/>
+      <genFeatures property="None" children="true" createChild="true" ecoreFeature="ecore:EReference LIRAs.ecore#//Model/conclusion"/>
+    </genClasses>
+    <genClasses ecoreClass="LIRAs.ecore#//Pattern">
+      <genFeatures createChild="false" ecoreFeature="ecore:EAttribute LIRAs.ecore#//Pattern/name"/>
+      <genFeatures property="None" children="true" createChild="true" ecoreFeature="ecore:EReference LIRAs.ecore#//Pattern/human"/>
+      <genFeatures property="None" children="true" createChild="true" ecoreFeature="ecore:EReference LIRAs.ecore#//Pattern/robot"/>
+      <genFeatures property="None" children="true" createChild="true" ecoreFeature="ecore:EReference LIRAs.ecore#//Pattern/locations"/>
+      <genFeatures property="None" children="true" createChild="true" ecoreFeature="ecore:EReference LIRAs.ecore#//Pattern/resources"/>
+    </genClasses>
+    <genClasses ecoreClass="LIRAs.ecore#//Sequence">
+      <genFeatures property="None" children="true" createChild="true" ecoreFeature="ecore:EReference LIRAs.ecore#//Sequence/agent"/>
+      <genFeatures property="None" children="true" createChild="true" ecoreFeature="ecore:EReference LIRAs.ecore#//Sequence/action"/>
+      <genFeatures property="None" children="true" createChild="true" ecoreFeature="ecore:EReference LIRAs.ecore#//Sequence/subSequence"/>
+    </genClasses>
+    <genClasses ecoreClass="LIRAs.ecore#//SubSequence">
+      <genFeatures createChild="false" ecoreFeature="ecore:EAttribute LIRAs.ecore#//SubSequence/i"/>
+      <genFeatures createChild="false" ecoreFeature="ecore:EAttribute LIRAs.ecore#//SubSequence/j"/>
+      <genFeatures property="None" children="true" createChild="true" ecoreFeature="ecore:EReference LIRAs.ecore#//SubSequence/loop"/>
+      <genFeatures property="None" children="true" createChild="true" ecoreFeature="ecore:EReference LIRAs.ecore#//SubSequence/action"/>
+      <genFeatures property="None" children="true" createChild="true" ecoreFeature="ecore:EReference LIRAs.ecore#//SubSequence/conditionalStatement"/>
+    </genClasses>
+    <genClasses ecoreClass="LIRAs.ecore#//Conclusion">
+      <genFeatures property="None" children="true" createChild="true" ecoreFeature="ecore:EReference LIRAs.ecore#//Conclusion/condition"/>
+    </genClasses>
+    <genClasses ecoreClass="LIRAs.ecore#//Loop">
+      <genFeatures property="None" children="true" createChild="true" ecoreFeature="ecore:EReference LIRAs.ecore#//Loop/condition"/>
+    </genClasses>
+    <genClasses ecoreClass="LIRAs.ecore#//ConditionalStatement">
+      <genFeatures property="None" children="true" createChild="true" ecoreFeature="ecore:EReference LIRAs.ecore#//ConditionalStatement/condition"/>
+      <genFeatures property="None" children="true" createChild="true" ecoreFeature="ecore:EReference LIRAs.ecore#//ConditionalStatement/action"/>
+      <genFeatures createChild="false" ecoreFeature="ecore:EAttribute LIRAs.ecore#//ConditionalStatement/n"/>
+    </genClasses>
+    <genClasses ecoreClass="LIRAs.ecore#//Action">
+      <genFeatures property="None" children="true" createChild="true" ecoreFeature="ecore:EReference LIRAs.ecore#//Action/target"/>
+      <genFeatures property="None" children="true" createChild="true" ecoreFeature="ecore:EReference LIRAs.ecore#//Action/resource"/>
+      <genFeatures property="None" children="true" createChild="true" ecoreFeature="ecore:EReference LIRAs.ecore#//Action/agent"/>
+    </genClasses>
+    <genClasses ecoreClass="LIRAs.ecore#//Condition">
+      <genFeatures property="None" children="true" createChild="true" ecoreFeature="ecore:EReference LIRAs.ecore#//Condition/atomicPredicate"/>
+    </genClasses>
+    <genClasses ecoreClass="LIRAs.ecore#//AtomicPredicate">
+      <genFeatures createChild="false" ecoreFeature="ecore:EAttribute LIRAs.ecore#//AtomicPredicate/n"/>
+      <genFeatures property="None" children="true" createChild="true" ecoreFeature="ecore:EReference LIRAs.ecore#//AtomicPredicate/agent"/>
+      <genFeatures property="None" children="true" createChild="true" ecoreFeature="ecore:EReference LIRAs.ecore#//AtomicPredicate/location"/>
+      <genFeatures property="None" children="true" createChild="true" ecoreFeature="ecore:EReference LIRAs.ecore#//AtomicPredicate/resource"/>
+      <genFeatures property="None" children="true" createChild="true" ecoreFeature="ecore:EReference LIRAs.ecore#//AtomicPredicate/relation"/>
+    </genClasses>
+    <genClasses ecoreClass="LIRAs.ecore#//Relation">
+      <genFeatures property="None" children="true" createChild="true" ecoreFeature="ecore:EReference LIRAs.ecore#//Relation/agent"/>
+      <genFeatures createChild="false" ecoreFeature="ecore:EAttribute LIRAs.ecore#//Relation/th"/>
+    </genClasses>
+    <genClasses ecoreClass="LIRAs.ecore#//Target">
+      <genFeatures createChild="false" ecoreFeature="ecore:EAttribute LIRAs.ecore#//Target/name"/>
+    </genClasses>
+    <genClasses ecoreClass="LIRAs.ecore#//Agent">
+      <genFeatures createChild="false" ecoreFeature="ecore:EAttribute LIRAs.ecore#//Agent/name"/>
+    </genClasses>
+    <genClasses ecoreClass="LIRAs.ecore#//Human">
+      <genFeatures createChild="false" ecoreFeature="ecore:EAttribute LIRAs.ecore#//Human/name"/>
+    </genClasses>
+    <genClasses ecoreClass="LIRAs.ecore#//Robot">
+      <genFeatures createChild="false" ecoreFeature="ecore:EAttribute LIRAs.ecore#//Robot/name"/>
+    </genClasses>
+    <genClasses ecoreClass="LIRAs.ecore#//Location">
+      <genFeatures createChild="false" ecoreFeature="ecore:EAttribute LIRAs.ecore#//Location/name"/>
+    </genClasses>
+    <genClasses ecoreClass="LIRAs.ecore#//Resource">
+      <genFeatures createChild="false" ecoreFeature="ecore:EAttribute LIRAs.ecore#//Resource/name"/>
+    </genClasses>
+  </genPackages>
+</genmodel:GenModel>
