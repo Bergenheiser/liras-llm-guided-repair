@@ -4,6 +4,7 @@ from vertexai.generative_models import GenerativeModel, ChatSession, Content, Pa
 from pathlib import Path
 from datetime import datetime
 import json
+from typing import Optional
 
 
 class DSLGenerator:
@@ -182,7 +183,7 @@ class DSLGenerator:
         """
         return response_text
 
-    def configure_repair_prompt(self, repair_prompt: str | None):
+    def configure_repair_prompt(self, repair_prompt: Optional[str]):
         """Configure which repair prompt template to use.
 
         If `repair_prompt` is:
