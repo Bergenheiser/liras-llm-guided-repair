@@ -1,1 +1,7 @@
+# Python deps
 google-cloud-aiplatform>=1.38.0
+
+# System/runtime prerequisites (not installable via pip):
+# - Python 3.9+ recommended
+# - Java runtime on PATH ("java" command) to run the compiler JAR, e.g.:
+#     java -jar <compiler_jar> <dsl_file>

@@ -2,12 +2,36 @@
 
 DSL Generator with Gemini API via Vertex AI - Automates the generation and refinement of domain-specific language code.
 
+This project runs an automated feedback loop:
+
+- Generate DSL with Vertex AI (Gemini)
+- Validate locally with a Java-based CLI compiler (JAR)
+- If compilation fails, send compiler output back to the model for repair
+- Repeat up to `max_iterations`
+
 ## Setup Instructions
+
+### 0. Local Prerequisites (Java)
+
+You must have a Java runtime installed and accessible as `java` on your `PATH` so the script can run the compiler JAR:
+
+```bash
+java -version
+```
+
+Install options:
+
+- macOS (Homebrew):
+  - `brew install openjdk`
+  - Ensure `java` is on PATH (Homebrew prints the exact `PATH`/symlink instructions after install)
+- Ubuntu/Debian:
+  - `sudo apt-get update && sudo apt-get install -y default-jre`
+- Windows:
+  - Install a JDK (e.g., Temurin/OpenJDK) and ensure `java.exe` is available in PATH
 
 ### 1. Google Cloud Project Setup
 
 1. **Create a Google Cloud Project** (if you don't have one):
-
    - Go to [Google Cloud Console](https://console.cloud.google.com/)
    - Click "Select a project" → "New Project"
    - Enter a project name and click "Create"
@@ -21,19 +45,16 @@ DSL Generator with Gemini API via Vertex AI - Automates the generation and refin
 ### 2. Create Service Account and Key
 
 1. **Create a Service Account**:
-
    - Go to "IAM & Admin" → "Service Accounts"
    - Click "Create Service Account"
    - Enter a name (e.g., `research-project`)
    - Click "Create and Continue"
 
 2. **Grant Permissions**:
-
    - Add the role: "Vertex AI User"
    - Click "Continue" → "Done"
 
 3. **Generate JSON Key**:
-
    - Click on your newly created service account
    - Go to "Keys" tab
    - Click "Add Key" → "Create new key"
@@ -54,7 +75,6 @@ DSL Generator with Gemini API via Vertex AI - Automates the generation and refin
    ```
 
 2. **Activate the virtual environment**:
-
    - On Windows:
 
      ```bash
@@ -113,7 +133,11 @@ RESEARCH_PROJECT/
 │   ├── UserScenario_016.txt
 │   └── ...
 └── Results/                  # Generated DSL code outputs and metadata
-    └── [scenario]/[system_prompt]/
+  └── Runs/                  # Organized per-run output folders
+    └── <Scenario>/<SystemPrompt>/RUN_<timestamp>/
+      ├── dsl/           # Generated DSL outputs (.LIRAs)
+      ├── compiler/      # Compiler outputs per attempt (*.compiler.txt)
+      └── run_metadata.json
 ```
 
 ## How to Use the Generator
@@ -129,7 +153,9 @@ Edit the `config.json` file to specify your configuration:
   "system_prompt": "SystemPrompt1.txt",
   "shots": 2,
   "scenario": "UserScenario_011.txt",
-  "repair_prompt": "RepairPrompt.txt"
+  "repair_prompt": "RepairPrompt.txt",
+  "compiler_jar": "Compiler/liras-compiler.jar",
+  "max_iterations": 10
 }
 ```
 
@@ -174,6 +200,8 @@ This will automatically load:
   - **Array**: Custom shot pairs with specific file names
   - **0 or []**: Zero-shot learning (no examples)
 - **`scenario`**: The scenario file from `Scenarios/` directory to generate DSL code for
+- **`compiler_jar` (required)**: Path to the runnable compiler JAR used for validation (relative to project root or absolute path)
+- **`max_iterations` (required)**: Maximum number of generate→compile→repair attempts before stopping
 
 ### 2. Run the Generator
 
@@ -197,39 +225,33 @@ The generator will display:
 
 ### 4. Get Initial DSL Code
 
-The AI will generate DSL code based on your configuration. The code will be displayed in the terminal and automatically saved to:
+The AI will generate DSL code based on your configuration, validate it with the local compiler JAR, and automatically repair on failure.
+
+Each attempt is saved under a dedicated run directory:
 
 ```
-Results/[scenario_name]/[system_prompt_name]/ITER0_[timestamp].txt
+Results/Runs/<Scenario>/<SystemPrompt>/RUN_<timestamp>/
+  dsl/ITER0_<timestamp>.LIRAs
+  compiler/ITER0_<timestamp>.LIRAs.compiler.txt
+  run_metadata.json
 ```
 
-### 5. Iterative Refinement (Optional)
+### 5. Automated Repair Loop
 
-If the generated code has compilation errors:
+On each iteration:
 
-1. Copy the error message from your DSL compiler
-2. Paste it into the terminal when prompted
-3. Press `Ctrl+D` (macOS/Linux) or `Ctrl+Z` then Enter (Windows) to submit
-4. The AI will analyze the error and generate corrected code
-5. Repeat as needed
+- The script saves the raw model output (no sanitization) as a `.LIRAs` file.
+- Runs: `java -jar <compiler_jar> <dsl_file>`
+- If compilation fails, the combined `stdout+stderr` is fed to the repair prompt template.
 
-**Special commands:**
+Stopping conditions:
 
-- Type `success` if the code compiled successfully
-- Type `exit` to quit without marking as successful
+- Success when the compiler returns exit code `0`, OR when the compiler emits no output (empty `stdout+stderr`).
+- Stops after `max_iterations` attempts.
 
 ### 6. Results
 
-Each iteration is saved with metadata:
-
-```
-Results/UserScenario_011/SystemPrompt1/
-├── ITER0_20260113_143022.txt            # Initial generation
-├── ITER0_20260113_143022_metadata.json  # Configuration metadata
-├── ITER1_20260113_143145.txt            # First refinement
-├── ITER1_20260113_143145_metadata.json
-└── SUCCESS_20260113_143301.txt          # Successful compilation
-```
+Each run produces a single `run_metadata.json` that is updated over time with telemetry, iteration outcomes, and a compact summary.
 
 ## Example Workflows
 
@@ -313,6 +335,11 @@ This automatically loads:
 - Check that file names in `config.json` match exactly (case-sensitive)
 - Verify files exist in the correct directories (`SPs/`, `Shots/`, `Scenarios/`)
 
+**Error: `java` not found / compiler JAR cannot run**
+
+- Ensure `java -version` works
+- Ensure `compiler_jar` in `config.json` points to an existing JAR
+
 ## Deactivate Virtual Environment
 
 When you're done:
@@ -326,8 +353,10 @@ deactivate
 
 ## Configuration
 
-Edit the `CONFIG` dictionary in `dsl_generator.py` to set:
+Edit `config.json` to set:
 
 - System prompt file
 - Few-shot example pairs
 - Target scenario file
+- Compiler JAR path (`compiler_jar`)
+- Maximum iterations (`max_iterations`)
