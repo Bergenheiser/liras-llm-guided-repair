@@ -44,6 +44,8 @@ class DSLGenerator:
         # Per-run state (initialized when starting an automated session)
         self.run_id: Optional[str] = None
         self.run_dir: Optional[Path] = None
+        self.run_dsl_dir: Optional[Path] = None
+        self.run_compiler_dir: Optional[Path] = None
         self.run_metadata_path: Optional[Path] = None
         self.run_metadata: Optional[dict] = None
 
@@ -110,13 +112,22 @@ class DSLGenerator:
         sp_name = config["system_prompt"].replace(".txt", "")
         scenario_name = config["scenario"].replace(".txt", "")
 
-        # Stable parent dir per scenario+SP; unique run dir per execution.
-        parent_dir = self.results_path / scenario_name / sp_name
-        parent_dir.mkdir(parents=True, exist_ok=True)
+        # User-friendly hierarchy: every run is fully contained in its own directory.
+        # Results/
+        #   Runs/<Scenario>/<SystemPrompt>/RUN_<run_id>/
+        #     dsl/
+        #     compiler/
+        runs_root = self.results_path / "Runs" / scenario_name / sp_name
+        runs_root.mkdir(parents=True, exist_ok=True)
 
         self.run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.run_dir = parent_dir / f"RUN_{self.run_id}"
+        self.run_dir = runs_root / f"RUN_{self.run_id}"
         self.run_dir.mkdir(parents=True, exist_ok=True)
+
+        self.run_dsl_dir = self.run_dir / "dsl"
+        self.run_compiler_dir = self.run_dir / "compiler"
+        self.run_dsl_dir.mkdir(parents=True, exist_ok=True)
+        self.run_compiler_dir.mkdir(parents=True, exist_ok=True)
 
         self.run_metadata_path = self.run_dir / "run_metadata.json"
         self.run_metadata = {
@@ -130,6 +141,9 @@ class DSLGenerator:
             "repair_prompt": str(self.repair_prompt_template_path),
             "compiler_jar": str(compiler_jar_path),
             "max_iterations": max_iterations,
+            "run_dir": str(self.run_dir),
+            "dsl_dir": str(self.run_dsl_dir),
+            "compiler_dir": str(self.run_compiler_dir),
             "iterations": [],
             "telemetry": self.telemetry,
             "llm_call_history": [],
@@ -483,17 +497,17 @@ Provide ONLY the corrected DSL code without any explanations or markdown formatt
             iteration: The iteration number (0 for initial, 1+ for refinements)
             success: Whether this version compiled successfully
         """
-        if self.run_dir is None:
+        if self.run_dsl_dir is None:
             print("Warning: No active run directory; cannot save result")
             return Path()
         
         # Create filename
         status = "SUCCESS" if success else f"ITER{iteration}"
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"{status}_{timestamp}.txt"
+        filename = f"{status}_{timestamp}.LIRAs"
         
         # Save DSL code
-        filepath = self.run_dir / filename
+        filepath = self.run_dsl_dir / filename
         with open(filepath, 'w', encoding='utf-8') as f:
             f.write(dsl_code)
         
@@ -582,7 +596,10 @@ Provide ONLY the corrected DSL code without any explanations or markdown formatt
                 is_valid, feedback = self.validate_code(saved_dsl_path, compiler_jar_path)
 
                 # Persist compiler output to a sidecar file for research/debugging
-                compiler_output_path = saved_dsl_path.with_suffix(saved_dsl_path.suffix + ".compiler.txt")
+                if self.run_compiler_dir is None:
+                    compiler_output_path = saved_dsl_path.with_suffix(saved_dsl_path.suffix + ".compiler.txt")
+                else:
+                    compiler_output_path = self.run_compiler_dir / (saved_dsl_path.name + ".compiler.txt")
                 try:
                     with open(compiler_output_path, "w", encoding="utf-8") as f:
                         f.write(feedback or "")
