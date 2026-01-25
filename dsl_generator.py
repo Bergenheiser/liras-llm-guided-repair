@@ -1,4 +1,6 @@
 import os
+import shlex
+import subprocess
 import vertexai
 from vertexai.generative_models import GenerativeModel, ChatSession, Content, Part
 from pathlib import Path
@@ -38,6 +40,145 @@ class DSLGenerator:
         self.chat = None
         self.current_config = {}
         self.last_dsl_code = None
+
+        # Per-run state (initialized when starting an automated session)
+        self.run_id: Optional[str] = None
+        self.run_dir: Optional[Path] = None
+        self.run_metadata_path: Optional[Path] = None
+        self.run_metadata: Optional[dict] = None
+
+        # Last validation details (populated by validate_code)
+        self.last_validation = {
+            "returncode": None,
+            "timed_out": False,
+            "java_missing": False,
+            "jar_missing": False,
+            "dsl_missing": False,
+        }
+
+        # Lightweight, approximate usage telemetry (persists in result metadata).
+        # We intentionally do NOT store prompt/response text here, only sizes/estimates.
+        self.telemetry = {
+            "llm_calls": 0,
+            "prompt_chars_total": 0,
+            "response_chars_total": 0,
+            "prompt_tokens_est_total": 0,
+            "response_tokens_est_total": 0,
+            "last_call": None,
+        }
+
+    def _estimate_tokens(self, text: str) -> int:
+        """Very rough token estimate based on character length.
+
+        Rule of thumb: ~4 characters per token for English-ish text.
+        This is approximate and meant only for local monitoring.
+        """
+        if not text:
+            return 0
+        return max(1, int(round(len(text) / 4)))
+
+    def _record_llm_call(self, kind: str, prompt_text: str, response_text: str) -> None:
+        prompt_chars = len(prompt_text or "")
+        response_chars = len(response_text or "")
+        prompt_tokens_est = self._estimate_tokens(prompt_text or "")
+        response_tokens_est = self._estimate_tokens(response_text or "")
+
+        self.telemetry["llm_calls"] += 1
+        self.telemetry["prompt_chars_total"] += prompt_chars
+        self.telemetry["response_chars_total"] += response_chars
+        self.telemetry["prompt_tokens_est_total"] += prompt_tokens_est
+        self.telemetry["response_tokens_est_total"] += response_tokens_est
+        self.telemetry["last_call"] = {
+            "kind": kind,
+            "timestamp": datetime.now().isoformat(),
+            "prompt_chars": prompt_chars,
+            "response_chars": response_chars,
+            "prompt_tokens_est": prompt_tokens_est,
+            "response_tokens_est": response_tokens_est,
+        }
+
+        if self.run_metadata is not None:
+            self.run_metadata.setdefault("llm_call_history", []).append(self.telemetry["last_call"])
+            self.run_metadata["telemetry"] = self.telemetry
+            self._persist_run_metadata()
+
+    def _init_run_metadata(self, config: dict, compiler_jar_path: Path, max_iterations: int) -> None:
+        """Initialize per-run directory + metadata file.
+
+        This is called once per run; metadata is then updated on every LLM call and validation.
+        """
+        sp_name = config["system_prompt"].replace(".txt", "")
+        scenario_name = config["scenario"].replace(".txt", "")
+
+        # Stable parent dir per scenario+SP; unique run dir per execution.
+        parent_dir = self.results_path / scenario_name / sp_name
+        parent_dir.mkdir(parents=True, exist_ok=True)
+
+        self.run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.run_dir = parent_dir / f"RUN_{self.run_id}"
+        self.run_dir.mkdir(parents=True, exist_ok=True)
+
+        self.run_metadata_path = self.run_dir / "run_metadata.json"
+        self.run_metadata = {
+            "run_id": self.run_id,
+            "run_started_at": datetime.now().isoformat(),
+            "project_id": self.project_id,
+            "location": self.location,
+            "system_prompt": config.get("system_prompt"),
+            "shots": config.get("shots"),
+            "scenario": config.get("scenario"),
+            "repair_prompt": str(self.repair_prompt_template_path),
+            "compiler_jar": str(compiler_jar_path),
+            "max_iterations": max_iterations,
+            "iterations": [],
+            "telemetry": self.telemetry,
+            "llm_call_history": [],
+            "status": "running",
+            "run_finished_at": None,
+        }
+
+        self._persist_run_metadata()
+
+    def _persist_run_metadata(self) -> None:
+        if not self.run_metadata_path or self.run_metadata is None:
+            return
+
+        # Compute a compact summary to simplify downstream analysis.
+        iterations = self.run_metadata.get("iterations", []) or []
+        validations_attempted = sum(1 for it in iterations if it.get("validated"))
+        compiler_failures = sum(1 for it in iterations if it.get("validated") and not it.get("is_valid"))
+        compiler_successes = sum(1 for it in iterations if it.get("validated") and it.get("is_valid"))
+        setup_errors = sum(1 for it in iterations if it.get("ended_because") == "validation_setup_error")
+
+        first_success_iter = None
+        final_success_dsl_path = None
+        for it in iterations:
+            if it.get("validated") and it.get("is_valid"):
+                first_success_iter = it.get("iteration")
+                final_success_dsl_path = it.get("dsl_path")
+                break
+
+        total_compiler_feedback_chars = 0
+        for it in iterations:
+            total_compiler_feedback_chars += int(it.get("compiler_feedback_chars") or 0)
+
+        self.run_metadata["summary"] = {
+            "iterations_recorded": len(iterations),
+            "validations_attempted": validations_attempted,
+            "compiler_failures": compiler_failures,
+            "compiler_successes": compiler_successes,
+            "setup_errors": setup_errors,
+            "first_success_iteration": first_success_iter,
+            "final_success_dsl_path": final_success_dsl_path,
+            "total_compiler_feedback_chars": total_compiler_feedback_chars,
+            "llm_calls": int((self.telemetry or {}).get("llm_calls") or 0),
+            "prompt_tokens_est_total": int((self.telemetry or {}).get("prompt_tokens_est_total") or 0),
+            "response_tokens_est_total": int((self.telemetry or {}).get("response_tokens_est_total") or 0),
+        }
+
+        self.run_metadata["updated_at"] = datetime.now().isoformat()
+        with open(self.run_metadata_path, "w", encoding="utf-8") as f:
+            json.dump(self.run_metadata, f, indent=2)
         
     def load_file(self, filepath: Path) -> str:
         """Load and return content from a text file"""
@@ -133,7 +274,10 @@ class DSLGenerator:
         
         # Send the actual scenario and get DSL code
         response = self.chat.send_message(scenario_content)
-        
+
+        # Telemetry: record prompt/response sizes (no sanitization)
+        self._record_llm_call("generate", scenario_content, response.text)
+
         return response.text
     
     def _display_full_prompt(self, system_prompt: str, history: list, scenario: str):
@@ -182,6 +326,85 @@ class DSLGenerator:
             Clean DSL code without markdown or explanations
         """
         return response_text
+
+    def validate_code(self, dsl_filepath: Path, compiler_jar_path: Path) -> tuple[bool, str]:
+        """Validate DSL code by running the local Java-based compiler.
+
+        Runs:
+            java -jar <compiler_jar_path> <dsl_filepath>
+
+        Returns:
+            (is_valid, feedback)
+            - is_valid is True when exit code == 0
+            - feedback is combined stdout+stderr for logging/repair
+        """
+        dsl_filepath = Path(dsl_filepath)
+        compiler_jar_path = Path(compiler_jar_path)
+
+        # Reset last validation markers
+        self.last_validation = {
+            "returncode": None,
+            "timed_out": False,
+            "java_missing": False,
+            "jar_missing": False,
+            "dsl_missing": False,
+        }
+
+        if not compiler_jar_path.exists():
+            self.last_validation["jar_missing"] = True
+            return (
+                False,
+                (
+                    "[VALIDATION_SETUP_ERROR] Compiler JAR not found.\n"
+                    f"Expected at: {compiler_jar_path}\n"
+                    "Set 'compiler_jar' in config.json to the correct path, or place the JAR there."
+                ),
+            )
+
+        if not dsl_filepath.exists():
+            self.last_validation["dsl_missing"] = True
+            return (
+                False,
+                (
+                    "[VALIDATION_SETUP_ERROR] DSL file to validate was not found.\n"
+                    f"Expected at: {dsl_filepath}"
+                ),
+            )
+
+        cmd = ["java", "-jar", str(compiler_jar_path), str(dsl_filepath)]
+
+        try:
+            completed = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        except FileNotFoundError as e:
+            # Most commonly: Java not installed / not on PATH
+            self.last_validation["java_missing"] = True
+            feedback = (
+                "[VALIDATION_SETUP_ERROR] Compiler invocation failed: 'java' was not found on PATH.\n"
+                "Install a JRE/JDK and ensure 'java' is available, then retry.\n\n"
+                f"Command: {shlex.join(cmd)}\n"
+                f"Details: {e}"
+            )
+            return False, feedback
+        except subprocess.TimeoutExpired:
+            self.last_validation["timed_out"] = True
+            feedback = (
+                "[VALIDATION_SETUP_ERROR] Compiler invocation timed out after 10 seconds.\n"
+                f"Command: {shlex.join(cmd)}\n"
+                f"DSL file: {dsl_filepath}"
+            )
+            return False, feedback
+
+        self.last_validation["returncode"] = completed.returncode
+
+        stdout = completed.stdout or ""
+        stderr = completed.stderr or ""
+        feedback = (stdout + ("\n" if stdout and stderr else "") + stderr).strip("\n")
+        return completed.returncode == 0, feedback
 
     def configure_repair_prompt(self, repair_prompt: Optional[str]):
         """Configure which repair prompt template to use.
@@ -246,9 +469,12 @@ Provide ONLY the corrected DSL code without any explanations or markdown formatt
         print("\n" + "="*50 + "\n")
         
         response = self.chat.send_message(refinement_prompt)
+
+        # Telemetry: record repair prompt/response sizes (no sanitization)
+        self._record_llm_call("repair", refinement_prompt, response.text)
         return response.text
     
-    def save_result(self, dsl_code: str, iteration: int = 0, success: bool = False):
+    def save_result(self, dsl_code: str, iteration: int = 0, success: bool = False) -> Path:
         """
         Save generated DSL code to results directory
         
@@ -257,16 +483,9 @@ Provide ONLY the corrected DSL code without any explanations or markdown formatt
             iteration: The iteration number (0 for initial, 1+ for refinements)
             success: Whether this version compiled successfully
         """
-        if not self.current_config:
-            print("Warning: No active configuration to save")
-            return
-        
-        # Create result directory structure
-        sp_name = self.current_config["system_prompt"].replace(".txt", "")
-        scenario_name = self.current_config["scenario"].replace(".txt", "")
-        
-        result_dir = self.results_path / scenario_name / sp_name
-        result_dir.mkdir(parents=True, exist_ok=True)
+        if self.run_dir is None:
+            print("Warning: No active run directory; cannot save result")
+            return Path()
         
         # Create filename
         status = "SUCCESS" if success else f"ITER{iteration}"
@@ -274,22 +493,13 @@ Provide ONLY the corrected DSL code without any explanations or markdown formatt
         filename = f"{status}_{timestamp}.txt"
         
         # Save DSL code
-        filepath = result_dir / filename
+        filepath = self.run_dir / filename
         with open(filepath, 'w', encoding='utf-8') as f:
             f.write(dsl_code)
         
-        # Save metadata
-        metadata = {
-            **self.current_config,
-            "iteration": iteration,
-            "success": success,
-            "saved_at": datetime.now().isoformat()
-        }
-        metadata_file = result_dir / f"{status}_{timestamp}_metadata.json"
-        with open(metadata_file, 'w', encoding='utf-8') as f:
-            json.dump(metadata, f, indent=2)
-        
         print(f"\n✓ Saved result to: {filepath}")
+
+        return filepath
     
     def run_automated_session(self, config: dict):
         """Run an automated session with hardcoded configuration"""
@@ -323,6 +533,24 @@ Provide ONLY the corrected DSL code without any explanations or markdown formatt
 
         # Optional: configure which repair prompt to use for refinement iterations
         self.configure_repair_prompt(config.get("repair_prompt"))
+
+        # Resolve compiler JAR path (relative paths are relative to project root)
+        compiler_jar_path = Path(config["compiler_jar"])
+        if not compiler_jar_path.is_absolute():
+            compiler_jar_path = (self.base_path / compiler_jar_path)
+
+        if not compiler_jar_path.exists():
+            print("\n❌ Error: compiler_jar path does not exist")
+            print(f"Path: {compiler_jar_path}")
+            print("Fix config.json to point at your compiler JAR.")
+            return
+
+        max_iterations = int(config["max_iterations"])
+        if max_iterations < 1:
+            max_iterations = 1
+
+        # Initialize per-run metadata and output directory
+        self._init_run_metadata(config, compiler_jar_path, max_iterations)
         
         # Start conversation and get initial DSL code
         try:
@@ -331,59 +559,159 @@ Provide ONLY the corrected DSL code without any explanations or markdown formatt
                 config['shots'],
                 config['scenario']
             )
+            # IMPORTANT: preserve raw model output exactly as received (no sanitization)
             dsl_code = response_text
             self.last_dsl_code = dsl_code
+
             print("\n=== GENERATED DSL CODE ===")
             print(dsl_code)
             print("\n" + "="*60 + "\n")
-            
-            # Save initial result
-            self.save_result(dsl_code, iteration=0)
-            
-            # Refinement loop
-            iteration = 1
-            while True:
+
+            # Automated compile/repair loop
+            iteration = 0
+            while iteration < max_iterations:
                 print("\n" + "="*60)
-                print("Paste compilation error below (or type 'success' if compiled successfully, 'exit' to quit):")
+                print(f"Validation iteration {iteration + 1}/{max_iterations}")
+                print(f"Compiler JAR: {compiler_jar_path}")
                 print("="*60)
-                
-                # Read multiline input until user presses Ctrl+Z (Windows) or Ctrl+D (Unix) then Enter
-                lines = []
+
+                # Save the raw DSL output immediately for debugging/repro
+                saved_dsl_path = self.save_result(dsl_code, iteration=iteration, success=False)
+
+                # Validate via local compiler
+                is_valid, feedback = self.validate_code(saved_dsl_path, compiler_jar_path)
+
+                # Persist compiler output to a sidecar file for research/debugging
+                compiler_output_path = saved_dsl_path.with_suffix(saved_dsl_path.suffix + ".compiler.txt")
                 try:
-                    while True:
-                        line = input()
-                        if line.lower() in ['success', 'exit']:
-                            user_input = line.lower()
-                            break
-                        lines.append(line)
-                except EOFError:
-                    user_input = '\n'.join(lines)
-                
-                if not lines and 'user_input' in locals():
-                    # Single-line command
-                    if user_input == 'success':
-                        self.save_result(dsl_code, iteration=iteration, success=True)
-                        print("\n✓ Session completed successfully!")
-                        break
-                    elif user_input == 'exit':
-                        print("\nExiting session.")
-                        break
-                else:
-                    # Multiline error message
-                    error_msg = '\n'.join(lines) if lines else user_input
-                    
-                    if not error_msg.strip():
-                        print("No error message provided. Please try again.")
-                        continue
-                    
-                    dsl_code = self.refine_with_error(error_msg)
-                    self.last_dsl_code = dsl_code
-                    print("\n=== REFINED DSL CODE ===")
-                    print(dsl_code)
+                    with open(compiler_output_path, "w", encoding="utf-8") as f:
+                        f.write(feedback or "")
+                except Exception as e:
+                    print(f"Warning: Could not write compiler output file: {e}")
+
+                # If validation can't run (missing Java/JAR/timeout), stop rather than prompting LLM.
+                if feedback.startswith("[VALIDATION_SETUP_ERROR]"):
+                    print("\n✗ Validation could not be performed")
+                    print("\n=== VALIDATION SETUP ERROR ===")
+                    print(feedback)
+                    print("\nStopping without attempting LLM repair.")
+
+                    if self.run_metadata is not None:
+                        self.run_metadata["status"] = "setup_error"
+                        self.run_metadata["run_finished_at"] = datetime.now().isoformat()
+                        self.run_metadata.setdefault("iterations", []).append(
+                            {
+                                "iteration": iteration,
+                                "dsl_path": str(saved_dsl_path),
+                                "compiler_output_path": str(compiler_output_path),
+                                "validated": False,
+                                "is_valid": False,
+                                "validation": self.last_validation,
+                                "ended_because": "validation_setup_error",
+                            }
+                        )
+                        self._persist_run_metadata()
+                    break
+
+                if is_valid:
+                    print("\n✓ Compiler reported SUCCESS")
+                    success_artifact = self.save_result(dsl_code, iteration=iteration, success=True)
+                    if self.run_metadata is not None:
+                        self.run_metadata["status"] = "success"
+                        self.run_metadata["run_finished_at"] = datetime.now().isoformat()
+                        self.run_metadata.setdefault("iterations", []).append(
+                            {
+                                "iteration": iteration,
+                                "dsl_path": str(saved_dsl_path),
+                                "success_artifact_path": str(success_artifact),
+                                "compiler_output_path": str(compiler_output_path),
+                                "validated": True,
+                                "is_valid": True,
+                                "validation": self.last_validation,
+                            }
+                        )
+                        self._persist_run_metadata()
+
+                    print("\n✓ Session completed successfully!")
+                    break
+
+                # Guardrail: if the compiler produced no error output at all, treat as success.
+                # This helps when the compiler signals success without a clean exit code.
+                no_error_output = not (feedback or "").strip()
+                if no_error_output:
+                    print("\n✓ No compiler errors detected (empty output)")
+                    success_artifact = self.save_result(dsl_code, iteration=iteration, success=True)
+
+                    if self.run_metadata is not None:
+                        self.run_metadata["status"] = "success_no_output"
+                        self.run_metadata["run_finished_at"] = datetime.now().isoformat()
+                        self.run_metadata.setdefault("iterations", []).append(
+                            {
+                                "iteration": iteration,
+                                "dsl_path": str(saved_dsl_path),
+                                "success_artifact_path": str(success_artifact),
+                                "compiler_output_path": str(compiler_output_path),
+                                "validated": True,
+                                "is_valid": True,
+                                "validation": self.last_validation,
+                                "ended_because": "no_compiler_output",
+                            }
+                        )
+                        self._persist_run_metadata()
+
+                    print("\n✓ Session completed successfully!")
+                    break
+
+                print("\n✗ Compiler reported FAILURE")
+                if feedback:
+                    print("\n=== COMPILER OUTPUT (stdout+stderr) ===")
+                    print(feedback)
                     print("\n" + "="*60 + "\n")
-                    
-                    self.save_result(dsl_code, iteration=iteration)
-                    iteration += 1
+                else:
+                    print("\n(No compiler output captured.)\n")
+
+                if iteration + 1 >= max_iterations:
+                    print(f"\nReached max iterations ({max_iterations}). Stopping.")
+
+                    if self.run_metadata is not None:
+                        self.run_metadata["status"] = "max_iterations_reached"
+                        self.run_metadata["run_finished_at"] = datetime.now().isoformat()
+                        self.run_metadata.setdefault("iterations", []).append(
+                            {
+                                "iteration": iteration,
+                                "dsl_path": str(saved_dsl_path),
+                                "compiler_output_path": str(compiler_output_path),
+                                "validated": True,
+                                "is_valid": False,
+                                "validation": self.last_validation,
+                                "compiler_feedback_chars": len(feedback or ""),
+                            }
+                        )
+                        self._persist_run_metadata()
+                    break
+
+                if self.run_metadata is not None:
+                    self.run_metadata.setdefault("iterations", []).append(
+                        {
+                            "iteration": iteration,
+                            "dsl_path": str(saved_dsl_path),
+                            "compiler_output_path": str(compiler_output_path),
+                            "validated": True,
+                            "is_valid": False,
+                            "validation": self.last_validation,
+                            "compiler_feedback_chars": len(feedback or ""),
+                        }
+                    )
+                    self._persist_run_metadata()
+
+                # Repair with LLM using external repair prompt template
+                dsl_code = self.refine_with_error(feedback)
+                self.last_dsl_code = dsl_code
+                print("\n=== REFINED DSL CODE ===")
+                print(dsl_code)
+                print("\n" + "="*60 + "\n")
+
+                iteration += 1
         
         except Exception as e:
             print(f"\nError during session: {e}")
@@ -405,7 +733,9 @@ def main():
 {
   "system_prompt": "SystemPrompt1.txt",
   "shots": 2,
-  "scenario": "UserScenario_011.txt"
+    "scenario": "UserScenario_011.txt",
+    "compiler_jar": "Compiler/liras-compiler.jar",
+    "max_iterations": 10
 }
 
 Or for custom shot pairs:
@@ -417,7 +747,9 @@ Or for custom shot pairs:
       "assistant": "AssistantScenario_1.txt"
     }
   ],
-  "scenario": "UserScenario_011.txt"
+    "scenario": "UserScenario_011.txt",
+    "compiler_jar": "Compiler/liras-compiler.jar",
+    "max_iterations": 10
 }
 """)
         return
@@ -431,11 +763,16 @@ Or for custom shot pairs:
         return
     
     # Validate configuration
-    required_keys = ["system_prompt", "shots", "scenario"]
+    required_keys = ["system_prompt", "shots", "scenario", "compiler_jar", "max_iterations"]
     for key in required_keys:
         if key not in config:
             print(f"\n❌ Error: Missing required key '{key}' in config.json")
             return
+
+    # Validate max_iterations type
+    if not isinstance(config["max_iterations"], int):
+        print(f"\n❌ Error: 'max_iterations' must be an integer in config.json")
+        return
     
     # Validate shots type
     if not isinstance(config["shots"], (int, list)):

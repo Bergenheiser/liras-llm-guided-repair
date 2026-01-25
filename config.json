@@ -2,5 +2,7 @@
   "system_prompt": "SystemPrompt3.txt",
   "shots": 2,
   "scenario": "UserScenario_011.txt",
-  "repair_prompt": "RepairPrompt.txt"
+  "repair_prompt": "RepairPrompt.txt",
+  "compiler_jar": "liras_compiler.jar",
+  "max_iterations": 10
 }
