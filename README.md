@@ -6,7 +6,7 @@ This project runs an automated feedback loop:
 
 - Generate DSL with Vertex AI (Gemini)
 - Validate locally with a Java-based CLI compiler (JAR)
-- If compilation fails, send compiler output back to the model for repair
+- If compilation fails, send compiler output back to the model for repair (in a dedicated repair chat)
 - Repeat up to `max_iterations`
 
 ## Setup Instructions
@@ -151,9 +151,12 @@ Edit the `config.json` file to specify your configuration:
 ```json
 {
   "system_prompt": "SystemPrompt1.txt",
+  "generation_model": "gemini-2.0-flash-lite-001",
+  "repair_model": "gemini-2.0-flash-lite-001",
   "shots": 2,
   "scenario": "UserScenario_011.txt",
   "repair_prompt": "RepairPrompt.txt",
+  "repair_shots": 0,
   "compiler_jar": "Compiler/liras-compiler.jar",
   "max_iterations": 10
 }
@@ -166,7 +169,7 @@ Optional:
 Included templates:
 
 - `SPs/RepairPrompt.txt`: Full repair guidance (fixes based on compiler output + pragmatic DSL repair heuristics).
-- `SPs/RepairPrompt_FormatOnly.txt`: Format/syntax focused (minimizes changes; derives fixes strictly from compiler output, avoids “logic/design” changes).
+- `SPs/RepairPrompt_Extended.txt`: More verbose/structured repair guidance (useful when compiler messages are ambiguous or repeated).
 
 This will automatically load:
 
@@ -178,6 +181,8 @@ This will automatically load:
 ```json
 {
   "system_prompt": "SystemPrompt1.txt",
+  "generation_model": "gemini-2.0-flash-lite-001",
+  "repair_model": "gemini-2.0-flash-lite-001",
   "shots": [
     {
       "user": "UserScenario_1.txt",
@@ -188,18 +193,26 @@ This will automatically load:
       "assistant": "AssistantScenario_2.txt"
     }
   ],
-  "scenario": "UserScenario_011.txt"
+  "scenario": "UserScenario_011.txt",
+  "repair_prompt": "RepairPrompt.txt",
+  "repair_shots": 0,
+  "compiler_jar": "Compiler/liras-compiler.jar",
+  "max_iterations": 10
 }
 ```
 
 **Configuration Options:**
 
 - **`system_prompt`**: The system prompt file from the `SPs/` directory that defines the AI's role and instructions
+- **`generation_model` (required)**: Vertex AI Gemini model name used for initial generation (e.g., `gemini-2.0-flash-lite-001`, `gemini-2.5-pro`)
+- **`repair_model` (required)**: Vertex AI Gemini model name used for repair iterations (can be the same as `generation_model`)
 - **`shots`**:
   - **Integer**: Number of shot examples (e.g., `2` loads UserScenario_1.txt + AssistantScenario_1.txt, UserScenario_2.txt + AssistantScenario_2.txt from Shots/ directory)
   - **Array**: Custom shot pairs with specific file names
   - **0 or []**: Zero-shot learning (no examples)
 - **`scenario`**: The scenario file from `Scenarios/` directory to generate DSL code for
+- **`repair_prompt`**: Repair-stage system prompt used by the repair chat. Defaults to `SPs/RepairPrompt.txt`. You can provide either a filename under `SPs/`, a relative path from the project root, or an absolute path.
+- **`repair_shots`**: Optional additional few-shots used only for the repair chat. Can be an integer (like `shots`) or an explicit list of `{user, assistant}` pairs. Use `0`/`[]` for none.
 - **`compiler_jar` (required)**: Path to the runnable compiler JAR used for validation (relative to project root or absolute path)
 - **`max_iterations` (required)**: Maximum number of generate→compile→repair attempts before stopping
 
@@ -242,12 +255,23 @@ On each iteration:
 
 - The script saves the raw model output (no sanitization) as a `.LIRAs` file.
 - Runs: `java -jar <compiler_jar> <dsl_file>`
-- If compilation fails, the combined `stdout+stderr` is fed to the repair prompt template.
+- If compilation fails, the combined `stdout+stderr` is fed into a dedicated repair chat.
+
+Repair chat methodology:
+
+- A new conversation is created whose **system prompt** is the selected `repair_prompt` file.
+- Each repair iteration sends a **single user message** that concatenates:
+  - the generation system prompt
+  - the generation scenario
+  - the previous DSL output
+  - the compiler output
+- Repair iterations persist within the same repair chat session.
 
 Stopping conditions:
 
 - Success when the compiler returns exit code `0`, OR when the compiler emits no output (empty `stdout+stderr`).
 - Stops after `max_iterations` attempts.
+- If validation cannot be performed (missing `java`, missing JAR, missing DSL file, or compiler timeout), the run stops and does not attempt LLM repair.
 
 ### 6. Results
 
@@ -315,7 +339,7 @@ This automatically loads:
 
 1. **System Prompts**: Create clear, detailed system prompts that explain the DSL syntax and rules
 2. **Few-Shot Examples**: Provide diverse examples that cover different DSL patterns
-3. **Error Messages**: Paste complete error messages including line numbers for better refinement
+3. **Compiler Feedback**: Check the saved `compiler/*.compiler.txt` outputs when diagnosing repeated failures
 4. **Iterative Process**: The AI learns from errors - don't give up after the first attempt!
 
 ## Troubleshooting
