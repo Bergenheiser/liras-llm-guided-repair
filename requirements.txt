@@ -1,5 +1,6 @@
 # Python deps
 google-cloud-aiplatform>=1.38.0
+google-genai>=1.47.0
 
 # System/runtime prerequisites (not installable via pip):
 # - Python 3.9+ recommended

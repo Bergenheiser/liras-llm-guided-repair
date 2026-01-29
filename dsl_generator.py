@@ -38,8 +38,14 @@ class DSLGenerator:
         
         self.model = None
         self.chat = None
+        self.repair_model = None
+        self.repair_chat = None
         self.current_config = {}
         self.last_dsl_code = None
+
+        # Generation context (captured once during generate phase; reused during repair prompts)
+        self.generation_system_prompt_text: Optional[str] = None
+        self.generation_scenario_text: Optional[str] = None
 
         # Per-run state (initialized when starting an automated session)
         self.run_id: Optional[str] = None
@@ -68,6 +74,33 @@ class DSLGenerator:
             "response_tokens_est_total": 0,
             "last_call": None,
         }
+
+    def _normalize_shots(self, shots) -> list[dict]:
+        """Normalize shots config into a list of {user, assistant} pairs.
+
+        Supports:
+        - int: N -> UserScenario_1..N.txt + AssistantScenario_1..N.txt
+        - list[dict]: already pairs
+        - None/0/[]: no shots
+        """
+        if not shots:
+            return []
+
+        if isinstance(shots, int):
+            if shots <= 0:
+                return []
+            shot_pairs = []
+            for i in range(1, shots + 1):
+                shot_pairs.append({
+                    "user": f"UserScenario_{i}.txt",
+                    "assistant": f"AssistantScenario_{i}.txt",
+                })
+            return shot_pairs
+
+        if isinstance(shots, list):
+            return shots
+
+        raise ValueError("shots must be an integer, a list of pairs, or empty")
 
     def _estimate_tokens(self, text: str) -> int:
         """Very rough token estimate based on character length.
@@ -139,6 +172,9 @@ class DSLGenerator:
             "shots": config.get("shots"),
             "scenario": config.get("scenario"),
             "repair_prompt": str(self.repair_prompt_template_path),
+            "generation_model": config.get("generation_model"),
+            "repair_model": config.get("repair_model"),
+            "repair_shots": config.get("repair_shots"),
             "compiler_jar": str(compiler_jar_path),
             "max_iterations": max_iterations,
             "run_dir": str(self.run_dir),
@@ -216,7 +252,7 @@ class DSLGenerator:
         for i, f in enumerate(scenario_files, 1):
             print(f"{i}. {f.name}")
     
-    def start_conversation(self, system_prompt_file: str, shots, scenario_file: str):
+    def start_conversation(self, system_prompt_file: str, shots, scenario_file: str, model_name: str):
         """
         Start a new conversation with configured system prompt, shot pairs, and scenario
         
@@ -227,16 +263,7 @@ class DSLGenerator:
                    List of dicts with 'user' and 'assistant' shot file names for backwards compatibility
             scenario_file: Name of the scenario file to process (e.g., "UserScenario_011.txt")
         """
-        # Convert integer shots to list of shot pairs
-        if isinstance(shots, int):
-            shot_pairs = []
-            for i in range(1, shots + 1):
-                shot_pairs.append({
-                    "user": f"UserScenario_{i}.txt",
-                    "assistant": f"AssistantScenario_{i}.txt"
-                })
-        else:
-            shot_pairs = shots if shots else []
+        shot_pairs = self._normalize_shots(shots)
         
         # Store configuration
         self.current_config = {
@@ -249,10 +276,13 @@ class DSLGenerator:
         
         # Load system prompt
         system_prompt = self.load_file(self.sp_path / system_prompt_file)
+
+        # Capture generation context for the repair phase
+        self.generation_system_prompt_text = system_prompt
         
         # Create model with system instruction
         self.model = GenerativeModel(
-            "gemini-2.0-flash-lite-001",
+            model_name,
             system_instruction=system_prompt
         )
         
@@ -274,6 +304,9 @@ class DSLGenerator:
         
         # Load the actual scenario to process
         scenario_content = self.load_file(self.scenarios_path / scenario_file)
+
+        # Capture generation context for the repair phase
+        self.generation_scenario_text = scenario_content
         
         print("\n=== Starting Conversation with Gemini ===")
         print(f"System Prompt: {system_prompt_file}")
@@ -292,6 +325,72 @@ class DSLGenerator:
         # Telemetry: record prompt/response sizes (no sanitization)
         self._record_llm_call("generate", scenario_content, response.text)
 
+        return response.text
+
+    def _build_repair_user_prompt(self, previous_dsl: str, compiler_output: str) -> str:
+        """Build the repair user prompt as a concatenation of:
+
+        - generation system prompt
+        - generation user scenario
+        - previous DSL output (raw)
+        - compiler output (raw)
+        """
+        gen_sp = self.generation_system_prompt_text or ""
+        gen_scenario = self.generation_scenario_text or ""
+
+        return (
+            "[GENERATION_SYSTEM_PROMPT]\n"
+            + gen_sp
+            + "\n\n[GENERATION_USER_SCENARIO]\n"
+            + gen_scenario
+            + "\n\n[PREVIOUS_DSL]\n"
+            + (previous_dsl or "")
+            + "\n\n[COMPILER_OUTPUT]\n"
+            + (compiler_output or "")
+        )
+
+    def _ensure_repair_chat(self, repair_model_name: str, repair_shots) -> None:
+        """Start a dedicated repair chat session if not already created.
+
+        The repair chat uses the configured repair prompt file content as system instruction.
+        Optionally includes repair few-shot history if configured.
+        """
+        if self.repair_chat is not None:
+            return
+
+        if not self.repair_prompt_template_path.exists():
+            raise FileNotFoundError(f"Repair prompt not found: {self.repair_prompt_template_path}")
+
+        repair_system_prompt = self.load_file(self.repair_prompt_template_path)
+        self.repair_model = GenerativeModel(
+            repair_model_name,
+            system_instruction=repair_system_prompt,
+        )
+
+        history = []
+        shot_pairs = self._normalize_shots(repair_shots)
+        if shot_pairs:
+            for pair in shot_pairs:
+                user_content = self.load_file(self.shots_path / pair["user"])
+                assistant_content = self.load_file(self.shots_path / pair["assistant"])
+                history.append(Content(role="user", parts=[Part.from_text(user_content)]))
+                history.append(Content(role="model", parts=[Part.from_text(assistant_content)]))
+
+        self.repair_chat = self.repair_model.start_chat(history=history)
+
+    def repair_with_compiler_output(self, previous_dsl: str, compiler_output: str, repair_model_name: str, repair_shots) -> str:
+        """Run one repair iteration using the dedicated repair chat."""
+        if not self.generation_system_prompt_text or not self.generation_scenario_text:
+            raise RuntimeError("Generation context missing; cannot construct repair prompt")
+
+        self._ensure_repair_chat(repair_model_name=repair_model_name, repair_shots=repair_shots)
+        prompt = self._build_repair_user_prompt(previous_dsl=previous_dsl, compiler_output=compiler_output)
+
+        print("\n=== Sending repair request to Gemini (repair chat) ===")
+        response = self.repair_chat.send_message(prompt)
+
+        # Telemetry: record repair prompt/response sizes (no sanitization)
+        self._record_llm_call("repair", prompt, response.text)
         return response.text
     
     def _display_full_prompt(self, system_prompt: str, history: list, scenario: str):
@@ -521,17 +620,7 @@ Provide ONLY the corrected DSL code without any explanations or markdown formatt
         print("DSL Generator - Automated Mode")
         print("="*60)
         
-        # Convert integer shots to list of shot pairs if needed
-        shots = config['shots']
-        if isinstance(shots, int):
-            shot_pairs = []
-            for i in range(1, shots + 1):
-                shot_pairs.append({
-                    "user": f"UserScenario_{i}.txt",
-                    "assistant": f"AssistantScenario_{i}.txt"
-                })
-        else:
-            shot_pairs = shots if shots else []
+        shot_pairs = self._normalize_shots(config.get('shots'))
         
         # Display configuration
         print("\n=== CURRENT CONFIGURATION ===")
@@ -543,6 +632,13 @@ Provide ONLY the corrected DSL code without any explanations or markdown formatt
         else:
             print("Shot Pairs: None (zero-shot learning)")
         print(f"Scenario: {config['scenario']}")
+        print(f"Generation Model: {config['generation_model']}")
+        print(f"Repair Model: {config['repair_model']}")
+        if config.get("repair_shots"):
+            repair_shot_pairs = self._normalize_shots(config.get("repair_shots"))
+            print(f"Repair Shot Pairs: {len(repair_shot_pairs)} example(s)")
+        else:
+            print("Repair Shot Pairs: None")
         print("="*60 + "\n")
 
         # Optional: configure which repair prompt to use for refinement iterations
@@ -571,7 +667,8 @@ Provide ONLY the corrected DSL code without any explanations or markdown formatt
             response_text = self.start_conversation(
                 config['system_prompt'],
                 config['shots'],
-                config['scenario']
+                config['scenario'],
+                model_name=config['generation_model'],
             )
             # IMPORTANT: preserve raw model output exactly as received (no sanitization)
             dsl_code = response_text
@@ -721,8 +818,13 @@ Provide ONLY the corrected DSL code without any explanations or markdown formatt
                     )
                     self._persist_run_metadata()
 
-                # Repair with LLM using external repair prompt template
-                dsl_code = self.refine_with_error(feedback)
+                # Repair with LLM using a dedicated repair chat (system prompt = repair prompt).
+                dsl_code = self.repair_with_compiler_output(
+                    previous_dsl=dsl_code,
+                    compiler_output=feedback,
+                    repair_model_name=config['repair_model'],
+                    repair_shots=config.get('repair_shots'),
+                )
                 self.last_dsl_code = dsl_code
                 print("\n=== REFINED DSL CODE ===")
                 print(dsl_code)
@@ -749,15 +851,21 @@ def main():
         print("""
 {
   "system_prompt": "SystemPrompt1.txt",
+    "generation_model": "gemini-2.0-flash-lite-001",
+    "repair_model": "gemini-2.0-flash-lite-001",
   "shots": 2,
     "scenario": "UserScenario_011.txt",
+        "repair_prompt": "RepairPrompt.txt",
     "compiler_jar": "Compiler/liras-compiler.jar",
-    "max_iterations": 10
+        "max_iterations": 10,
+        "repair_shots": 0
 }
 
 Or for custom shot pairs:
 {
   "system_prompt": "SystemPrompt1.txt",
+    "generation_model": "gemini-2.0-flash-lite-001",
+    "repair_model": "gemini-2.0-flash-lite-001",
   "shots": [
     {
       "user": "UserScenario_1.txt",
@@ -765,8 +873,10 @@ Or for custom shot pairs:
     }
   ],
     "scenario": "UserScenario_011.txt",
+        "repair_prompt": "RepairPrompt.txt",
     "compiler_jar": "Compiler/liras-compiler.jar",
-    "max_iterations": 10
+        "max_iterations": 10,
+        "repair_shots": []
 }
 """)
         return
@@ -780,7 +890,15 @@ Or for custom shot pairs:
         return
     
     # Validate configuration
-    required_keys = ["system_prompt", "shots", "scenario", "compiler_jar", "max_iterations"]
+    required_keys = [
+        "system_prompt",
+        "generation_model",
+        "repair_model",
+        "shots",
+        "scenario",
+        "compiler_jar",
+        "max_iterations",
+    ]
     for key in required_keys:
         if key not in config:
             print(f"\n❌ Error: Missing required key '{key}' in config.json")
@@ -790,11 +908,25 @@ Or for custom shot pairs:
     if not isinstance(config["max_iterations"], int):
         print(f"\n❌ Error: 'max_iterations' must be an integer in config.json")
         return
+
+    # Validate model keys
+    if not isinstance(config["generation_model"], str) or not config["generation_model"].strip():
+        print(f"\n❌ Error: 'generation_model' must be a non-empty string in config.json")
+        return
+    if not isinstance(config["repair_model"], str) or not config["repair_model"].strip():
+        print(f"\n❌ Error: 'repair_model' must be a non-empty string in config.json")
+        return
     
     # Validate shots type
     if not isinstance(config["shots"], (int, list)):
         print(f"\n❌ Error: 'shots' must be an integer or a list in config.json")
         return
+
+    # Validate optional repair_shots type
+    if "repair_shots" in config and config["repair_shots"] is not None:
+        if not isinstance(config["repair_shots"], (int, list)):
+            print(f"\n❌ Error: 'repair_shots' must be an integer or a list in config.json")
+            return
     
     # Check for key.json in current directory
     key_file = Path(__file__).parent / "key.json"
