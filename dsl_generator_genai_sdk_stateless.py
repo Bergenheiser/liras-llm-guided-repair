@@ -34,7 +34,15 @@ else:
     print(f"\nCreate the keys/ directory if it doesn't exist.")
 
 class DSLGenerator:
-    def __init__(self, project_id: str, location: str = "global", service_account_key: str = None):
+    def __init__(
+        self,
+        project_id: str,
+        location: str = "global",
+        service_account_key: str = None,
+        *,
+        generation_temperature: float = 1.0,
+        repair_temperature: float = 0.2,
+    ):
         """
         Initialize the DSL Generator with Vertex AI credentials
         
@@ -52,6 +60,9 @@ class DSLGenerator:
         self.client = genai.Client(vertexai=True, project=project_id, location=location)
         self.project_id = project_id
         self.location = location
+
+        # Decoding parameters (tracked as experimental variables)
+        self.generation_temperature = float(generation_temperature)
 
         # Server-side chat support (SDK/version dependent). If unavailable or errors at runtime,
         # we fall back to stateless generate_content with explicit contents history.
@@ -92,7 +103,7 @@ class DSLGenerator:
         self.repair_stateless = True
 
         # Repair decoding defaults (favor determinism to reduce regressions).
-        self.repair_temperature = 0.2
+        self.repair_temperature = float(repair_temperature)
 
         # Approximate compiler error progress tracking (used as a light “monotonic improvement” signal)
         self.compiler_error_score_history: list[dict] = []
@@ -140,7 +151,7 @@ class DSLGenerator:
                 history=history,
                 config=types.GenerateContentConfig(
                     system_instruction=system_instruction,
-                    temperature=1.0,
+                    temperature=self.generation_temperature,
                 ),
             )
         except Exception as e:
@@ -262,7 +273,9 @@ class DSLGenerator:
             "scenario": config.get("scenario"),
             "repair_prompt": str(self.repair_prompt_template_path),
             "generation_model": config.get("generation_model"),
+            "generation_temperature": float(getattr(self, "generation_temperature", 1.0)),
             "repair_model": config.get("repair_model"),
+            "repair_temperature": float(getattr(self, "repair_temperature", 0.2)),
             "repair_shots": config.get("repair_shots"),
             "compiler_jar": str(compiler_jar_path),
             "max_iterations": max_iterations,
@@ -418,7 +431,7 @@ class DSLGenerator:
                 contents=current_history,
                 config=types.GenerateContentConfig(
                     system_instruction=system_prompt,
-                    temperature=1.0,
+                    temperature=self.generation_temperature,
                 ),
             )
         
@@ -1167,6 +1180,17 @@ Or for custom shot pairs:
         print(f"\n❌ Error: 'repair_model' must be a non-empty string in config.json")
         return
 
+    # Optional decoding parameters (experimental variables)
+    generation_temperature = config.get("generation_temperature", 1.0)
+    repair_temperature = config.get("repair_temperature", 0.2)
+    for name, value in [("generation_temperature", generation_temperature), ("repair_temperature", repair_temperature)]:
+        if not isinstance(value, (int, float)):
+            print(f"\n❌ Error: '{name}' must be a number in config.json")
+            return
+        if float(value) < 0.0:
+            print(f"\n❌ Error: '{name}' must be >= 0.0")
+            return
+
     # Optional: Vertex AI location/region (model availability can be region-dependent)
     location = config.get("location", "global")
     if not isinstance(location, str) or not location.strip():
@@ -1229,7 +1253,13 @@ Or for custom shot pairs:
             return
     
     # Initialize generator
-    generator = DSLGenerator(project_id, location=location, service_account_key=service_account_key)
+    generator = DSLGenerator(
+        project_id,
+        location=location,
+        service_account_key=service_account_key,
+        generation_temperature=float(generation_temperature),
+        repair_temperature=float(repair_temperature),
+    )
     
     # Run automated session with configuration from config.json
     generator.run_automated_session(config)

@@ -3,8 +3,10 @@
   "scenario": "UserScenario_011.txt",
   "compiler_jar": "liras_compiler.jar",
   "generation_model": "gemini-3-pro-preview",
+  "generation_temperature": 1.0,
   "shots": 2,
   "repair_model": "gemini-3-pro-preview",
+  "repair_temperature": 0.2,
   "repair_prompt": "SystemPromptRepair1.txt",
   "repair_shots": 0,
   "max_iterations": 5
