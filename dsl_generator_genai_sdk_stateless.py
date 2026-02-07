@@ -1166,6 +1166,13 @@ Or for custom shot pairs:
     if not isinstance(config["repair_model"], str) or not config["repair_model"].strip():
         print(f"\n❌ Error: 'repair_model' must be a non-empty string in config.json")
         return
+
+    # Optional: Vertex AI location/region (model availability can be region-dependent)
+    location = config.get("location", "global")
+    if not isinstance(location, str) or not location.strip():
+        print(f"\n❌ Error: 'location' must be a non-empty string when provided in config.json")
+        return
+    location = location.strip()
     
     # Validate shots type
     if not isinstance(config["shots"], (int, list)):
@@ -1222,7 +1229,7 @@ Or for custom shot pairs:
             return
     
     # Initialize generator
-    generator = DSLGenerator(project_id, service_account_key=service_account_key)
+    generator = DSLGenerator(project_id, location=location, service_account_key=service_account_key)
     
     # Run automated session with configuration from config.json
     generator.run_automated_session(config)
