@@ -7,7 +7,8 @@
   "shots": 2,
   "repair_model": "gemini-3-pro-preview",
   "repair_temperature": 0.35,
-  "repair_prompt": "SystemPromptRepair2.txt",
+  "repair_max_output_tokens": 16384,
+  "repair_prompt": "SystemPromptRepair3_lightweigth.txt",
   "repair_shots": 0,
-  "max_iterations": 5
+  "max_iterations": 10
 }

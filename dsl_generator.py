@@ -35,6 +35,7 @@ class DSLGenerator:
         *,
         generation_temperature: float = 1.0,
         repair_temperature: float = 0.2,
+        repair_max_output_tokens: int = 16384,
     ):
         """
         Initialize the DSL Generator with Vertex AI credentials
@@ -96,6 +97,7 @@ class DSLGenerator:
 
         # Repair decoding defaults (favor determinism to reduce regressions).
         self.repair_temperature = float(repair_temperature)
+        self.repair_max_output_tokens = int(repair_max_output_tokens)
 
         # Approximate compiler error progress tracking (used as a light “monotonic improvement” signal)
         self.compiler_error_score_history: list[dict] = []
@@ -206,11 +208,27 @@ class DSLGenerator:
             return 0
         return max(1, int(round(len(text) / 4)))
 
-    def _record_llm_call(self, kind: str, prompt_text: str, response_text: str) -> None:
+    def _record_llm_call(self, kind: str, prompt_text: str, response_obj) -> None:
+        """Record telemetry for an LLM call, including model metadata.
+
+        Args:
+            kind: 'generate' or 'repair'
+            prompt_text: The prompt string sent to the model
+            response_obj: The raw Gemini response object (GenerateContentResponse)
+        """
+        # Extract metadata from the Gemini response object
+        candidate = response_obj.candidates[0] if response_obj.candidates else None
+        finish_reason = candidate.finish_reason if candidate else "UNKNOWN"
+        safety_ratings = [
+            {"category": str(r.category), "probability": str(r.probability)}
+            for r in (candidate.safety_ratings if candidate and candidate.safety_ratings else [])
+        ]
+
+        response_text = response_obj.text or ""
         prompt_chars = len(prompt_text or "")
-        response_chars = len(response_text or "")
+        response_chars = len(response_text)
         prompt_tokens_est = self._estimate_tokens(prompt_text or "")
-        response_tokens_est = self._estimate_tokens(response_text or "")
+        response_tokens_est = self._estimate_tokens(response_text)
 
         self.telemetry["llm_calls"] += 1
         self.telemetry["prompt_chars_total"] += prompt_chars
@@ -220,11 +238,17 @@ class DSLGenerator:
         self.telemetry["last_call"] = {
             "kind": kind,
             "timestamp": datetime.now().isoformat(),
+            "finish_reason": str(finish_reason),
+            "safety_ratings": safety_ratings,
             "prompt_chars": prompt_chars,
             "response_chars": response_chars,
             "prompt_tokens_est": prompt_tokens_est,
             "response_tokens_est": response_tokens_est,
         }
+
+        # Log finish_reason to stdout for quick diagnosis
+        if response_chars == 0:
+            print(f"[WARNING] {kind} response was 0 chars. finish_reason={finish_reason}")
 
         if self.run_metadata is not None:
             self.run_metadata.setdefault("llm_call_history", []).append(self.telemetry["last_call"])
@@ -270,6 +294,7 @@ class DSLGenerator:
             "generation_temperature": float(getattr(self, "generation_temperature", 1.0)),
             "repair_model": config.get("repair_model"),
             "repair_temperature": float(getattr(self, "repair_temperature", 0.2)),
+            "repair_max_output_tokens": int(getattr(self, "repair_max_output_tokens", 16384)),
             "repair_shots": config.get("repair_shots"),
             "compiler_jar": str(compiler_jar_path),
             "max_iterations": max_iterations,
@@ -412,6 +437,11 @@ class DSLGenerator:
                 config=types.GenerateContentConfig(
                     system_instruction=system_prompt,
                     temperature=self.generation_temperature,
+                    safety_settings=[
+                        types.SafetySetting(category="HARM_CATEGORY_HATE_SPEECH", threshold="BLOCK_NONE"),
+                        types.SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold="BLOCK_NONE"),
+                        types.SafetySetting(category="HARM_CATEGORY_DANGEROUS_CONTENT", threshold="BLOCK_NONE"),
+                    ],
                 ),
             )
         
@@ -424,8 +454,8 @@ class DSLGenerator:
         self.chat_history.append(types.Content(role="user", parts=[types.Part(text=scenario_content)]))
         self.chat_history.append(types.Content(role="model", parts=[types.Part(text=response_text)]))
 
-        # Telemetry: record prompt/response sizes (no sanitization)
-        self._record_llm_call("generate", scenario_content, response_text)
+        # Telemetry: record prompt/response sizes + model metadata
+        self._record_llm_call("generate", scenario_content, response)
 
         return response_text
 
@@ -444,25 +474,19 @@ class DSLGenerator:
 
         parts.append("### REPAIR TASK")
         parts.append(
-            "Your previous attempt is provided below. Compare it to the "
-            "COMPILER_OUTPUT to identify why the fix failed.\n"
+            "The DSL below failed to compile. Compare it to the "
+            "COMPILER_OUTPUT to identify why and fix it.\n"
         )
 
-        # Anchor: the original generation (read-only reference)
-        if self.initial_dsl_from_generation:
-            parts.append("### INITIAL_GENERATION (Reference Only)")
-            parts.append(self.initial_dsl_from_generation)
-            parts.append("")
-
-        # The most recent failed attempt
+        # The most recent failed attempt (the DSL the model must fix)
         if include_previous_dsl and previous_dsl:
             parts.append("### PREVIOUS_FAILED_ATTEMPT")
             parts.append(previous_dsl)
             parts.append("")
 
-        # Current compiler errors
+        # Current compiler errors (truncated to reduce noise)
         parts.append("### CURRENT_COMPILER_OUTPUT")
-        parts.append(compiler_output or "")
+        parts.append(self._truncate_compiler_output(compiler_output or ""))
         parts.append("")
 
         # Instruction block
@@ -474,6 +498,35 @@ class DSLGenerator:
         )
 
         return "\n".join(parts)
+
+    @staticmethod
+    def _truncate_compiler_output(compiler_output: str, max_errors: int = 5) -> str:
+        """Keep only the first `max_errors` unique [ERROR] lines plus any header.
+
+        The Xtext compiler often emits cascading duplicates (e.g., 18 errors
+        from one root cause).  Sending all of them wastes tokens and dilutes
+        the model's focus.  We keep the first few unique error lines which
+        almost always contain the root cause.
+        """
+        if not compiler_output:
+            return ""
+        lines = compiler_output.splitlines()
+        kept: list[str] = []
+        error_count = 0
+        seen: set[str] = set()
+        for line in lines:
+            stripped = line.strip()
+            if stripped.startswith("[ERROR]"):
+                # Deduplicate identical error messages
+                if stripped in seen:
+                    continue
+                seen.add(stripped)
+                error_count += 1
+                if error_count > max_errors:
+                    kept.append(f"... ({len([l for l in lines if l.strip().startswith('[ERROR]')])} total errors, showing first {max_errors})")
+                    break
+            kept.append(line)
+        return "\n".join(kept)
 
     def _score_compiler_output(self, compiler_output: str) -> dict:
         """Compute a lightweight, approximate error severity score.
@@ -514,26 +567,12 @@ class DSLGenerator:
         }
 
     def _fill_repair_system_prompt_template(self, template_text: str) -> str:
-        """Fill the repair system prompt template with static generation artifacts.
+        """Return the repair system prompt.
 
-        We intentionally avoid str.format because the embedded DSL/system prompt/scenario
-        may contain curly braces.
+        No placeholders remain after the context trimming — the prompt is used as-is.
+        This method is kept for backward compatibility and future extensibility.
         """
-        if not self.generation_system_prompt_text or not self.generation_scenario_text:
-            raise RuntimeError("Generation context missing; cannot build filled repair system prompt")
-        if self.initial_dsl_from_generation is None:
-            raise RuntimeError("Initial DSL from generation missing; cannot build filled repair system prompt")
-
-        filled = template_text
-        replacements = {
-            "generation_system_prompt": self.generation_system_prompt_text,
-            "generation_user_scenario": self.generation_scenario_text,
-            "initial_dsl": self.initial_dsl_from_generation,
-        }
-
-        for key, value in replacements.items():
-            filled = filled.replace("{" + key + "}", value or "")
-        return filled
+        return template_text
 
     def _ensure_repair_chat(self, repair_model_name: str, repair_shots) -> None:
         """Start a dedicated repair chat session if not already created.
@@ -617,7 +656,12 @@ class DSLGenerator:
                     config=types.GenerateContentConfig(
                         system_instruction=self.repair_system_prompt,
                         temperature=current_temp,
-                        max_output_tokens=8192,
+                        max_output_tokens=self.repair_max_output_tokens,
+                        safety_settings=[
+                            types.SafetySetting(category="HARM_CATEGORY_HATE_SPEECH", threshold="BLOCK_NONE"),
+                            types.SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold="BLOCK_NONE"),
+                            types.SafetySetting(category="HARM_CATEGORY_DANGEROUS_CONTENT", threshold="BLOCK_NONE"),
+                        ],
                     ),
                 )
             else:
@@ -633,7 +677,12 @@ class DSLGenerator:
                         config=types.GenerateContentConfig(
                             system_instruction=self.repair_system_prompt,
                             temperature=current_temp,
-                            max_output_tokens=8192,
+                            max_output_tokens=self.repair_max_output_tokens,
+                            safety_settings=[
+                                types.SafetySetting(category="HARM_CATEGORY_HATE_SPEECH", threshold="BLOCK_NONE"),
+                                types.SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold="BLOCK_NONE"),
+                                types.SafetySetting(category="HARM_CATEGORY_DANGEROUS_CONTENT", threshold="BLOCK_NONE"),
+                            ],
                         ),
                     )
 
@@ -662,8 +711,8 @@ class DSLGenerator:
         if len(self.repair_history_window) > self.max_window_size:
             self.repair_history_window = self.repair_history_window[-self.max_window_size:]
 
-        # Telemetry: record repair prompt/response sizes (no sanitization)
-        self._record_llm_call("repair", prompt, repair_text)
+        # Telemetry: record repair prompt/response sizes + model metadata
+        self._record_llm_call("repair", prompt, response)
         return repair_text
     
     def _extract_dsl_code(self, response_text: str) -> str:
@@ -872,6 +921,7 @@ class DSLGenerator:
         print(f"   Shots:          {config.get('shots')}")
         print(f"   Max iterations: {max_iterations}")
         print(f"   Repair prompt:  {self.repair_prompt_template_path.name}")
+        print(f"   Repair max tokens: {self.repair_max_output_tokens}")
         print(f"{'='*60}")
 
         # Fail fast if the compiler JAR is missing, but still record the interruption.
@@ -1263,6 +1313,7 @@ def main():
         service_account_key=service_account_key,
         generation_temperature=float(generation_temperature),
         repair_temperature=float(repair_temperature),
+        repair_max_output_tokens=int(config.get("repair_max_output_tokens", 16384)),
     )
     
     # Run automated session with configuration from config.json
