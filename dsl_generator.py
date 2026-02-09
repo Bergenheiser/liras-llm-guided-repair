@@ -1,8 +1,10 @@
 import os
 import shlex
 import subprocess
+import time
 from google import genai
 from google.genai import types
+from google.api_core.exceptions import ResourceExhausted
 from pathlib import Path
 from datetime import datetime
 import json
@@ -159,6 +161,15 @@ class DSLGenerator:
             # Batch-friendly: fall back silently when server-side chats are unavailable.
             self.supports_server_chat = False
             return None
+
+    def _call_with_backoff(self, func, *, label: str):
+        """Run a callable with a single retry on resource exhaustion."""
+        try:
+            return func()
+        except ResourceExhausted:
+            print(f"[BACKOFF] {label} hit resource exhaustion. Waiting 5s before retry...")
+            time.sleep(5)
+            return func()
 
     def _build_shot_history(self, shot_pairs: list[dict], *, shots_base_path: Path) -> list[types.Content]:
         """Build alternating user/model Content messages from configured shot pairs."""
@@ -431,23 +442,29 @@ class DSLGenerator:
 
         print(f"[GENERATE] Sending scenario to generation model ({model_name})...")
         if self.generation_chat is not None:
-            response = self.generation_chat.send_message(scenario_content)
+            response = self._call_with_backoff(
+                lambda: self.generation_chat.send_message(scenario_content),
+                label="generation_chat.send_message",
+            )
         else:
             current_history = self.chat_history + [
                 types.Content(role="user", parts=[types.Part(text=scenario_content)])
             ]
-            response = self.client.models.generate_content(
-                model=model_name,
-                contents=current_history,
-                config=types.GenerateContentConfig(
-                    system_instruction=system_prompt,
-                    temperature=self.generation_temperature,
-                    safety_settings=[
-                        types.SafetySetting(category="HARM_CATEGORY_HATE_SPEECH", threshold="BLOCK_NONE"),
-                        types.SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold="BLOCK_NONE"),
-                        types.SafetySetting(category="HARM_CATEGORY_DANGEROUS_CONTENT", threshold="BLOCK_NONE"),
-                    ],
+            response = self._call_with_backoff(
+                lambda: self.client.models.generate_content(
+                    model=model_name,
+                    contents=current_history,
+                    config=types.GenerateContentConfig(
+                        system_instruction=system_prompt,
+                        temperature=self.generation_temperature,
+                        safety_settings=[
+                            types.SafetySetting(category="HARM_CATEGORY_HATE_SPEECH", threshold="BLOCK_NONE"),
+                            types.SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold="BLOCK_NONE"),
+                            types.SafetySetting(category="HARM_CATEGORY_DANGEROUS_CONTENT", threshold="BLOCK_NONE"),
+                        ],
+                    ),
                 ),
+                label="generation.generate_content",
             )
         
         response_text = response.text or ""
@@ -655,30 +672,10 @@ class DSLGenerator:
                 current_contents = (self.repair_chat_history or []) + [
                     types.Content(role="user", parts=[types.Part(text=prompt)])
                 ]
-                response = self.client.models.generate_content(
-                    model=self.repair_model_name,
-                    contents=current_contents,
-                    config=types.GenerateContentConfig(
-                        system_instruction=self.repair_system_prompt,
-                        temperature=current_temp,
-                        max_output_tokens=self.repair_max_output_tokens,
-                        safety_settings=[
-                            types.SafetySetting(category="HARM_CATEGORY_HATE_SPEECH", threshold="BLOCK_NONE"),
-                            types.SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold="BLOCK_NONE"),
-                            types.SafetySetting(category="HARM_CATEGORY_DANGEROUS_CONTENT", threshold="BLOCK_NONE"),
-                        ],
-                    ),
-                )
-            else:
-                if self.repair_chat is not None:
-                    response = self.repair_chat.send_message(prompt)
-                else:
-                    current_history = (self.repair_chat_history or []) + [
-                        types.Content(role="user", parts=[types.Part(text=prompt)])
-                    ]
-                    response = self.client.models.generate_content(
+                response = self._call_with_backoff(
+                    lambda: self.client.models.generate_content(
                         model=self.repair_model_name,
-                        contents=current_history,
+                        contents=current_contents,
                         config=types.GenerateContentConfig(
                             system_instruction=self.repair_system_prompt,
                             temperature=current_temp,
@@ -689,6 +686,35 @@ class DSLGenerator:
                                 types.SafetySetting(category="HARM_CATEGORY_DANGEROUS_CONTENT", threshold="BLOCK_NONE"),
                             ],
                         ),
+                    ),
+                    label="repair.generate_content",
+                )
+            else:
+                if self.repair_chat is not None:
+                    response = self._call_with_backoff(
+                        lambda: self.repair_chat.send_message(prompt),
+                        label="repair_chat.send_message",
+                    )
+                else:
+                    current_history = (self.repair_chat_history or []) + [
+                        types.Content(role="user", parts=[types.Part(text=prompt)])
+                    ]
+                    response = self._call_with_backoff(
+                        lambda: self.client.models.generate_content(
+                            model=self.repair_model_name,
+                            contents=current_history,
+                            config=types.GenerateContentConfig(
+                                system_instruction=self.repair_system_prompt,
+                                temperature=current_temp,
+                                max_output_tokens=self.repair_max_output_tokens,
+                                safety_settings=[
+                                    types.SafetySetting(category="HARM_CATEGORY_HATE_SPEECH", threshold="BLOCK_NONE"),
+                                    types.SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold="BLOCK_NONE"),
+                                    types.SafetySetting(category="HARM_CATEGORY_DANGEROUS_CONTENT", threshold="BLOCK_NONE"),
+                                ],
+                            ),
+                        ),
+                        label="repair.generate_content_stateful",
                     )
 
             repair_text = (response.text or "").strip()
@@ -891,10 +917,13 @@ class DSLGenerator:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"{status}_{timestamp}.LIRAs"
         
-        # Save DSL code
+        # Save DSL code (ensure trailing newline for compiler friendliness)
         filepath = self.run_dsl_dir / filename
+        content = dsl_code or ""
+        if content and not content.endswith("\n"):
+            content += "\n"
         with open(filepath, 'w', encoding='utf-8') as f:
-            f.write(dsl_code or "")
+            f.write(content)
 
         return filepath
     
