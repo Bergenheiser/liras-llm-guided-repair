@@ -65,6 +65,8 @@ class DSLGenerator:
         self.base_path = Path(__file__).parent
         self.sp_path = self.base_path / "SPs"
         self.shots_path = self.base_path / "Shots"
+        self.generative_shots_path = self.shots_path / "Generative"
+        self.repair_shots_path = self.shots_path / "Repair"
         self.scenarios_path = self.base_path / "Scenarios"
         self.results_path = self.base_path / "Results"
         self.repair_prompt_template_path = self.base_path / "SPs" / "RepairPrompt.txt"
@@ -158,15 +160,15 @@ class DSLGenerator:
             self.supports_server_chat = False
             return None
 
-    def _build_shot_history(self, shot_pairs: list[dict]) -> list[types.Content]:
+    def _build_shot_history(self, shot_pairs: list[dict], *, shots_base_path: Path) -> list[types.Content]:
         """Build alternating user/model Content messages from configured shot pairs."""
         history: list[types.Content] = []
         if not shot_pairs:
             return history
 
         for pair in shot_pairs:
-            user_content = self.load_file(self.shots_path / pair["user"])
-            assistant_content = self.load_file(self.shots_path / pair["assistant"])
+            user_content = self.load_file(shots_base_path / pair["user"])
+            assistant_content = self.load_file(shots_base_path / pair["assistant"])
             history.append(types.Content(role="user", parts=[types.Part(text=user_content)]))
             history.append(types.Content(role="model", parts=[types.Part(text=assistant_content)]))
         return history
@@ -359,11 +361,14 @@ class DSLGenerator:
     def list_available_files(self) -> dict:
         """Return available system prompts, shots, and scenarios (no printing)."""
         sp_files = [p.name for p in sorted(self.sp_path.glob("*.txt"))]
-        shot_files = [p.name for p in sorted(self.shots_path.glob("*.txt"))]
+        generative_shots = [p.name for p in sorted(self.generative_shots_path.glob("*.txt"))]
+        repair_shots = [p.name for p in sorted(self.repair_shots_path.glob("*.txt"))]
         scenario_files = [p.name for p in sorted(self.scenarios_path.glob("*.txt"))]
         return {
             "system_prompts": sp_files,
-            "shots": shot_files,
+            "shots": generative_shots,
+            "generative_shots": generative_shots,
+            "repair_shots": repair_shots,
             "scenarios": scenario_files,
         }
     
@@ -399,7 +404,7 @@ class DSLGenerator:
         self.model_name = model_name
         
         # Build chat history from few-shot examples
-        history = self._build_shot_history(shot_pairs)
+        history = self._build_shot_history(shot_pairs, shots_base_path=self.generative_shots_path)
         
         # Store chat history and system prompt for subsequent messages
         self.chat_history = history
@@ -592,7 +597,7 @@ class DSLGenerator:
         self.repair_system_prompt = repair_system_prompt
 
         shot_pairs = self._normalize_shots(repair_shots)
-        history = self._build_shot_history(shot_pairs)
+        history = self._build_shot_history(shot_pairs, shots_base_path=self.repair_shots_path)
 
         self.repair_chat_history = history
         self.repair_iteration_count = 0
