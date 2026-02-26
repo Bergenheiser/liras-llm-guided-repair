@@ -3,6 +3,7 @@
 import argparse
 import json
 import os
+import sys
 import time
 from copy import deepcopy
 from datetime import datetime
@@ -11,6 +12,8 @@ from typing import Optional
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 
 def _default_key_path() -> Path:
@@ -173,7 +176,7 @@ def _parse_shots_arg(value: str) -> Optional[list[int]]:
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "Run the full DSL pipeline (generate → compile → repair) for every "
+            "Run the DSL repair pipeline for every "
             "UserScenario/SystemPrompt pair. Uses config.json as a template, overriding "
             "system_prompt + scenario for each run."
         )
@@ -196,7 +199,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--shots",
-        default="",
+        default="0,1,2",
         help=(
             "Comma-separated shot counts to run (e.g., 0,1,2). "
             "Leave empty to use shots from config.json."
@@ -209,8 +212,15 @@ def main() -> int:
     )
     parser.add_argument(
         "--disable-generation",
+        dest="disable_generation",
         action="store_true",
-        help="Skip generation and load DSL from cache for each pair",
+        help="Skip generation and load DSL from cache for each pair (default behavior)",
+    )
+    parser.add_argument(
+        "--enable-generation",
+        dest="disable_generation",
+        action="store_false",
+        help="Enable generation stage (overrides default repair-only mode)",
     )
     parser.add_argument(
         "--compiler-timeout",
@@ -224,6 +234,7 @@ def main() -> int:
         default=1.0,
         help="Delay in seconds between runs to allow system recovery (default: 1.0)",
     )
+    parser.set_defaults(disable_generation=True)
 
     args = parser.parse_args()
 
@@ -231,6 +242,8 @@ def main() -> int:
         parser.error("--compiler-timeout must be >= 0")
     if args.inter_run_delay < 0:
         parser.error("--inter-run-delay must be >= 0")
+    if args.generation_only and args.disable_generation:
+        parser.error("--generation-only cannot be combined with repair-only mode. Use --enable-generation.")
 
     cfg_path = Path(args.config)
     if not cfg_path.is_absolute():
