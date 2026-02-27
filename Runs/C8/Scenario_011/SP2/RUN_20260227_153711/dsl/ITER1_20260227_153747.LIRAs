@@ -1,0 +1,18 @@
+Lab_Sample_Delivery
+
+agents:
+    robots: Robot1
+    humans: LabPersonnel
+
+locations: PatientFloor, Lab
+resources: sample
+
+Robot1:
+    1: moveTo PatientFloor
+    pick sample
+    moveTo Lab
+    deposit sample
+
+LabPersonnel:
+    1: pick sample
+    stop

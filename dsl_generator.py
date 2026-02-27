@@ -796,6 +796,7 @@ class DSLGenerator:
         history = self._build_shot_history(shot_pairs, shots_base_path=self.repair_shots_path)
 
         self.repair_chat_history = history
+        self._repair_shot_message_count = len(history)  # preserve count for sliding window pruning
         self.repair_iteration_count = 0
 
         # Best-effort server-side repair chat session.
@@ -859,6 +860,7 @@ class DSLGenerator:
                             system_instruction=self.repair_system_prompt,
                             temperature=current_temp,
                             max_output_tokens=self.repair_max_output_tokens,
+                            response_mime_type="text/plain",
                             safety_settings=[
                                 types.SafetySetting(category="HARM_CATEGORY_HATE_SPEECH", threshold="BLOCK_NONE"),
                                 types.SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold="BLOCK_NONE"),
@@ -886,6 +888,7 @@ class DSLGenerator:
                                 system_instruction=self.repair_system_prompt,
                                 temperature=current_temp,
                                 max_output_tokens=self.repair_max_output_tokens,
+                                response_mime_type="text/plain",
                                 safety_settings=[
                                     types.SafetySetting(category="HARM_CATEGORY_HATE_SPEECH", threshold="BLOCK_NONE"),
                                     types.SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold="BLOCK_NONE"),
@@ -910,6 +913,17 @@ class DSLGenerator:
         if not self.repair_stateless:
             self.repair_chat_history.append(types.Content(role="user", parts=[types.Part(text=prompt)]))
             self.repair_chat_history.append(types.Content(role="model", parts=[types.Part(text=repair_text)]))
+
+            # Sliding window: keep initial shot messages + only the last N repair turns
+            # to prevent context poisoning from accumulated failed attempts.
+            shot_count = getattr(self, '_repair_shot_message_count', 0)
+            max_repair_turns = self.max_window_size  # each turn = 2 messages (user + model)
+            shot_messages = self.repair_chat_history[:shot_count]
+            repair_messages = self.repair_chat_history[shot_count:]
+            max_repair_messages = max_repair_turns * 2
+            if len(repair_messages) > max_repair_messages:
+                self.repair_chat_history = shot_messages + repair_messages[-max_repair_messages:]
+                print(f"[REPAIR] Pruned stateful history: kept {shot_count} shot msgs + {max_repair_messages} repair msgs")
 
         self.repair_iteration_count += 1
         print(f"[REPAIR] Response received ({len(repair_text)} chars)")

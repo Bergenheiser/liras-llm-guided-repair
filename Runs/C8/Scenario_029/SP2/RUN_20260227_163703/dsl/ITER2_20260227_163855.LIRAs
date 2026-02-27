@@ -1,0 +1,14 @@
+Chemo_Bot
+
+agents:
+humans: Child, Nurse
+robots: Robot
+
+locations: TherapyArea
+resources: Book
+
+Robot:
+1: moveTo TherapyArea
+2: follow Child
+3: pick Book
+4: stop
