@@ -1,0 +1,14 @@
+Hotel_Butler
+
+agents:
+    robots: ButlerRobot, Guest
+
+locations:
+    GuestRoom
+
+resources:
+    Item
+
+ButlerRobot:
+    1: moveTo GuestRoom
+    2: deliver Item to Guest

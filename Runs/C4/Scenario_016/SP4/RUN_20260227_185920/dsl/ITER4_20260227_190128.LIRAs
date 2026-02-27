@@ -1,0 +1,14 @@
+TaskAutomationPattern
+
+agents:
+    robots:
+        Robot1
+
+locations:
+    location1
+
+resources:
+    resource1
+
+Robot1:
+    1: stop

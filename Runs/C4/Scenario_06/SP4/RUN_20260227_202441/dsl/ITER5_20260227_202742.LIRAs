@@ -1,0 +1,13 @@
+InferredPattern
+
+agents:
+robots: Robot1
+
+locations:
+    locationA
+
+resources:
+    resourceX
+
+Robot1:
+    1: moveTo locationA

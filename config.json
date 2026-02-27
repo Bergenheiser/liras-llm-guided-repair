@@ -16,7 +16,7 @@
   "repair_temperature": 0.35,
   "repair_max_output_tokens": 16384,
   "repair_prompt": "Repair/SPR2.txt",
-  "repair_shots": 3,
+  "repair_shots": 0,
   "compiler_timeout": 60,
   "max_iterations": 10
 }

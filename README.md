@@ -470,13 +470,6 @@ Generated comparison figures:
 - `fig04_cost_to_success.png`
 - `config_mapping.csv` (uses your config IDs directly, e.g., `c1`, `c2`, ...)
 
-## Tips for Best Results
-
-1. **System Prompts**: Create clear, detailed system prompts that explain the DSL syntax and rules
-2. **Few-Shot Examples**: Provide diverse examples that cover different DSL patterns
-3. **Compiler Feedback**: Check the saved `compiler/*.compiler.txt` outputs when diagnosing repeated failures
-4. **Iterative Process**: The AI learns from errors - don't give up after the first attempt!
-
 ## Troubleshooting
 
 **Error: config.json not found**
