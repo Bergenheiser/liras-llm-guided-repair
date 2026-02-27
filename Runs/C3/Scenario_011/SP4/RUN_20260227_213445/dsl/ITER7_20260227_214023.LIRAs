@@ -1,0 +1,10 @@
+MySimplePattern
+agents:
+robots: Robot1
+locations:
+    LocationA
+resources:
+    ResourceX
+
+Robot1:
+    1:stop

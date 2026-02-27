@@ -1,0 +1,10 @@
+Hotel_Butler
+agents:
+	robots: Robot
+
+locations: lobby, rooms
+resources: storageBox, items
+
+Robot:
+	1: moveTo lobby
+	2: moveTo rooms

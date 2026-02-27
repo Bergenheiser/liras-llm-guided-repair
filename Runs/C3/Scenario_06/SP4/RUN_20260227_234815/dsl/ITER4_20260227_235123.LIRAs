@@ -1,0 +1,9 @@
+MyPattern
+
+agents:
+  humans: Hum1
+  robots: Rob1
+locations:
+  LocA
+resources:
+  Res1
