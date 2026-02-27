@@ -6,13 +6,13 @@
   "generation_temperature": 1.0,
   "shots": 2,
   "generation_only": false,
-  "repair_stateless": false,
-  "use_generated_dsl_cache": false,
+  "use_generated_dsl_cache": true,
   "generated_dsl_source": "dsl_folder",
   "generated_dsl_root": "GeneratedDSL",
   "dsl_source_root": "DSL",
-
-  "repair_model": "gemini-3-pro-preview",
+  
+  "repair_stateless": false,
+  "repair_model": "gemini-2.5-flash",
   "repair_temperature": 0.35,
   "repair_max_output_tokens": 16384,
   "repair_prompt": "Repair/SPR2.txt",

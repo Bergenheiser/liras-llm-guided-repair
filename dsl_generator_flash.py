@@ -123,7 +123,7 @@ class DSLGenerator:
         # Windowed context: track immediate history of attempts and errors
         # to help the repair prompt contrast previous failures.
         self.repair_history_window: list[dict] = []  # Stores {'dsl': str, 'error': str}
-        self.max_window_size: int = 1  # Only keep the most recent failure to prevent anchoring
+        self.max_window_size: int = 3  # Keep last 3 turns — enough to avoid ping-pong regressions
 
         # Per-run state (initialized when starting an automated session)
         self.run_id: Optional[str] = None

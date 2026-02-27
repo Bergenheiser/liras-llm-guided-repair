@@ -234,6 +234,12 @@ def main() -> int:
         default=1.0,
         help="Delay in seconds between runs to allow system recovery (default: 5.0)",
     )
+    parser.add_argument(
+        "--flash",
+        action="store_true",
+        default=False,
+        help="Use the flash-optimized generator (dsl_generator_flash.py) with minimal rate limiting",
+    )
     parser.set_defaults(disable_generation=True)
 
     args = parser.parse_args()
@@ -309,7 +315,11 @@ def main() -> int:
     print(f"  Inter-run delay: {args.inter_run_delay}s")
     print(f"{'='*70}\n")
 
-    from dsl_generator import DSLGenerator
+    if args.flash:
+        from dsl_generator_flash import DSLGenerator
+        print("[BATCH] Using flash-optimized generator (minimal backoff)")
+    else:
+        from dsl_generator import DSLGenerator
 
     for idx, (scenario, sp, shots) in enumerate(planned_pairs, start=1):
         shots_label = shots if shots is not None else template.get("shots")
