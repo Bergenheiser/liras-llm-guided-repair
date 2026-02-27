@@ -6,6 +6,7 @@
   "generation_temperature": 1.0,
   "shots": 2,
   "generation_only": false,
+  "repair_stateless": false,
   "use_generated_dsl_cache": false,
   "generated_dsl_source": "dsl_folder",
   "generated_dsl_root": "GeneratedDSL",
@@ -15,7 +16,7 @@
   "repair_temperature": 0.35,
   "repair_max_output_tokens": 16384,
   "repair_prompt": "Repair/SPR2.txt",
-  "repair_shots": 0,
+  "repair_shots": 3,
   "compiler_timeout": 60,
   "max_iterations": 10
 }

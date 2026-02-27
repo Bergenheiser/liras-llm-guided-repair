@@ -231,8 +231,8 @@ def main() -> int:
     parser.add_argument(
         "--inter-run-delay",
         type=float,
-        default=1.0,
-        help="Delay in seconds between runs to allow system recovery (default: 1.0)",
+        default=5.0,
+        help="Delay in seconds between runs to allow system recovery (default: 5.0)",
     )
     parser.set_defaults(disable_generation=True)
 

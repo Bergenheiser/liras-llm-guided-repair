@@ -5,7 +5,11 @@ import subprocess
 import time
 from google import genai
 from google.genai import types
-from google.api_core.exceptions import ResourceExhausted
+from google.genai.errors import ClientError as GenaiClientError
+try:
+    from google.api_core.exceptions import ResourceExhausted
+except ImportError:
+    ResourceExhausted = None  # Not used by the genai SDK but kept for safety
 from pathlib import Path
 from datetime import datetime
 import json
@@ -100,10 +104,10 @@ class DSLGenerator:
         self.repair_iteration_count = 0
         self.last_repair_prompt_included_previous_dsl: Optional[bool] = None
 
-        # Repair strategy: mitigate context poisoning by making each repair call stateless.
-        # We still reuse the same repair system prompt and (optional) repair shots, but we do
-        # NOT include prior failed repair turns in subsequent requests.
-        self.repair_stateless = True
+        # Repair strategy: stateful mode sends shots/system prompt once and keeps a
+        # server-side chat session, dramatically reducing per-call token volume.
+        # Set to True to fall back to stateless mode if context poisoning is a concern.
+        self.repair_stateless = False
 
         # Repair decoding defaults (favor determinism to reduce regressions).
         self.repair_temperature = float(repair_temperature)
@@ -169,14 +173,31 @@ class DSLGenerator:
             self.supports_server_chat = False
             return None
 
-    def _call_with_backoff(self, func, *, label: str):
-        """Run a callable with a single retry on resource exhaustion."""
-        try:
-            return func()
-        except ResourceExhausted:
-            print(f"[BACKOFF] {label} hit resource exhaustion. Waiting 5s before retry...")
-            time.sleep(5)
-            return func()
+    def _call_with_backoff(self, func, *, label: str, max_retries: int = 5):
+        """Run a callable with exponential backoff on resource exhaustion (429)."""
+        import random
+
+        # Build a tuple of exception types to catch.
+        _retryable = (GenaiClientError,)
+        if ResourceExhausted is not None:
+            _retryable = (GenaiClientError, ResourceExhausted)
+
+        for attempt in range(max_retries + 1):
+            try:
+                return func()
+            except _retryable as exc:
+                # GenaiClientError is raised for ALL 4xx codes; only retry on 429.
+                if isinstance(exc, GenaiClientError) and getattr(exc, 'code', None) != 429:
+                    raise
+                if attempt == max_retries:
+                    print(f"[BACKOFF] {label} exhausted all {max_retries} retries. Raising.")
+                    raise
+                base_delay = min(2 ** (attempt + 1), 120)  # 2, 4, 8, 16, 32 … capped at 120s
+                jitter = random.uniform(0, base_delay * 0.5)
+                wait = base_delay + jitter
+                print(f"[BACKOFF] {label} hit 429 (attempt {attempt + 1}/{max_retries}). "
+                      f"Waiting {wait:.1f}s before retry...")
+                time.sleep(wait)
 
     def _build_shot_history(self, shot_pairs: list[dict], *, shots_base_path: Path) -> list[types.Content]:
         """Build alternating user/model Content messages from configured shot pairs."""
@@ -191,11 +212,11 @@ class DSLGenerator:
             history.append(types.Content(role="model", parts=[types.Part(text=assistant_content)]))
         return history
 
-    def _normalize_shots(self, shots) -> list[dict]:
+    def _normalize_shots(self, shots, *, start_index: int = 1) -> list[dict]:
         """Normalize shots config into a list of {user, assistant} pairs.
 
         Supports:
-        - int: N -> UserScenario_1..N.txt + AssistantScenario_1..N.txt
+        - int: N -> UserScenario_<start_index>.. and AssistantScenario_<start_index>..
         - list[dict]: already pairs
         - None/0/[]: no shots
         """
@@ -206,7 +227,9 @@ class DSLGenerator:
             if shots <= 0:
                 return []
             shot_pairs = []
-            for i in range(1, shots + 1):
+            first = int(start_index)
+            last = first + shots
+            for i in range(first, last):
                 shot_pairs.append({
                     "user": f"UserScenario_{i}.txt",
                     "assistant": f"AssistantScenario_{i}.txt",
@@ -769,7 +792,7 @@ class DSLGenerator:
         self.repair_model_name = repair_model_name
         self.repair_system_prompt = repair_system_prompt
 
-        shot_pairs = self._normalize_shots(repair_shots)
+        shot_pairs = self._normalize_shots(repair_shots, start_index=3)
         history = self._build_shot_history(shot_pairs, shots_base_path=self.repair_shots_path)
 
         self.repair_chat_history = history
@@ -1140,6 +1163,10 @@ class DSLGenerator:
         # Optional: configure which repair prompt to use for refinement iterations
         self.configure_repair_prompt(config.get("repair_prompt"))
 
+        # Allow config to override the default repair stateless/stateful mode
+        if "repair_stateless" in config:
+            self.repair_stateless = bool(config["repair_stateless"])
+
         # Resolve compiler JAR path (relative paths are relative to project root)
         compiler_jar_raw = config.get("compiler_jar")
         compiler_jar_path = Path(compiler_jar_raw) if compiler_jar_raw else Path("")
@@ -1150,20 +1177,47 @@ class DSLGenerator:
         if max_iterations < 1:
             max_iterations = 1
 
+        compiler_timeout_raw = config.get("compiler_timeout", self.compiler_timeout)
+        try:
+            compiler_timeout = int(compiler_timeout_raw)
+        except (TypeError, ValueError):
+            compiler_timeout = int(self.compiler_timeout)
+        if compiler_timeout <= 0:
+            compiler_timeout = int(self.compiler_timeout)
+
+        use_cached_generation = bool(config.get("use_generated_dsl_cache"))
+        dsl_source_mode = "cache" if use_cached_generation else "generation"
+        dsl_source_detail = "n/a"
+        if use_cached_generation:
+            try:
+                dsl_source_detail = str(self._resolve_cached_dsl_path(config))
+            except Exception as e:
+                dsl_source_detail = f"<unresolved: {type(e).__name__}>"
+
+        repair_shots_cfg = config.get("repair_shots")
+        repair_shot_pairs = self._normalize_shots(repair_shots_cfg, start_index=3)
+        repair_shot_count = len(repair_shot_pairs)
+
         # Initialize per-run metadata and output directory
         self._init_run_metadata(config, compiler_jar_path, max_iterations)
 
-        print(f"\n{'='*60}")
-        print(f"[START] Automated session")
-        print(f"   Model (gen):    {config.get('generation_model')}")
-        print(f"   Model (repair): {config.get('repair_model')}")
-        print(f"   System prompt:  {config.get('system_prompt')}")
-        print(f"   Scenario:       {config.get('scenario')}")
-        print(f"   Shots:          {config.get('shots')}")
-        print(f"   Max iterations: {max_iterations}")
-        print(f"   Repair prompt:  {self.repair_prompt_template_path.name}")
-        print(f"   Repair max tokens: {self.repair_max_output_tokens}")
-        print(f"{'='*60}")
+        print(
+            "[START] "
+            f"scenario={config.get('scenario')} "
+            f"sp={config.get('system_prompt')} "
+            f"gen_model={config.get('generation_model')} "
+            f"gen_shots={config.get('shots')} "
+            f"source={dsl_source_mode} "
+            f"max_iter={max_iterations} timeout={compiler_timeout}s"
+        )
+        print(
+            "[REPAIR_CFG] "
+            f"model={config.get('repair_model')} "
+            f"prompt={self.repair_prompt_template_path.name} "
+            f"strategy={'stateless' if self.repair_stateless else 'stateful'} "
+            f"temp={self.repair_temperature} max_tokens={self.repair_max_output_tokens} "
+            f"jshots_cfg={repair_shots_cfg} jshots_loaded={repair_shot_count}"
+        )
 
         # Fail fast if the compiler JAR is missing, but still record the interruption.
         if not generation_only and not compiler_jar_path.exists():
@@ -1183,9 +1237,8 @@ class DSLGenerator:
         
         # Start conversation and get initial DSL code
         try:
-            use_cached_generation = bool(config.get("use_generated_dsl_cache"))
             if use_cached_generation:
-                print("[GENERATE] Skipping generation; loading DSL from cache...")
+                print(f"[GENERATE] Skipping generation; loading DSL from cache: {dsl_source_detail}")
                 dsl_code = self._load_generated_dsl_cache(config)
             else:
                 response_text = self.start_conversation(
@@ -1229,13 +1282,6 @@ class DSLGenerator:
 
                 # Validate via local compiler
                 print("[COMPILE] Validating DSL...")
-                compiler_timeout_raw = config.get("compiler_timeout", self.compiler_timeout)
-                try:
-                    compiler_timeout = int(compiler_timeout_raw)
-                except (TypeError, ValueError):
-                    compiler_timeout = int(self.compiler_timeout)
-                if compiler_timeout <= 0:
-                    compiler_timeout = int(self.compiler_timeout)
                 is_valid, feedback = self.validate_code(saved_dsl_path, compiler_jar_path, compiler_timeout=compiler_timeout)
 
                 # Track approximate “progress” signal from compiler output.
