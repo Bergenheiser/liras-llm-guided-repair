@@ -1,0 +1,7 @@
+MyPatternName
+
+agents:
+  humans: h1
+  robots:
+locations:
+resources:

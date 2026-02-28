@@ -1,0 +1,9 @@
+HotelRobotButlerScenario
+agents: Robot1
+locations:
+    lobby
+resources:
+    keycard
+
+Robot1:
+    1: stop

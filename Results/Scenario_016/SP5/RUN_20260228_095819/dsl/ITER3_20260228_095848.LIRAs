@@ -1,0 +1,12 @@
+Service_Navigation
+
+agents: Robot1
+
+locations:
+    dummy_location
+
+resources:
+    dummy_resource
+
+Robot1:
+    1: stop

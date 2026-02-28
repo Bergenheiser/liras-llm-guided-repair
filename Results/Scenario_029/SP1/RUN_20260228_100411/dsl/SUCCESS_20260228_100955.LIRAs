@@ -1,0 +1,10 @@
+Chemotherapy_Therapy
+
+agents:
+robots: A1, A2
+
+locations:
+    L1, L2, L3
+
+resources:
+    R1, R2
