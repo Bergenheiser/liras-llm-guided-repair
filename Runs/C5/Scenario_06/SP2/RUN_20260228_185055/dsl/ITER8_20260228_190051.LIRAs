@@ -1,0 +1,10 @@
+HotelButler
+agent:
+  sub-sequence deliverItem:
+    moveTo guestRoom
+    pick item
+    stop
+    deliver item
+    moveTo nextAction
+    moveTo hotelFloor
+    moveTo lift

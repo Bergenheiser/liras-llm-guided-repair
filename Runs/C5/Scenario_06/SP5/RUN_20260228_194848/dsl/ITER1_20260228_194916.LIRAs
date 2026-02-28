@@ -1,0 +1,15 @@
+Hotel Butler
+AGENTS:
+Butler
+
+LOCATIONS:
+guestRoom
+
+OBJECTS:
+item
+
+BEHAVIOR_MODELS:
+Butler {
+	moveTo guestRoom
+	deliver item
+}

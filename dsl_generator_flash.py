@@ -406,12 +406,22 @@ class DSLGenerator:
         sp_name = config["system_prompt"].replace(".txt", "")
         scenario_name = config["scenario"].replace(".txt", "")
 
+        # Allow config to override the output root (e.g. for parallel batch isolation).
+        # If the directory exists results are inserted alongside; otherwise it is created.
+        cfg_results_dir = config.get("results_dir")
+        if cfg_results_dir and str(cfg_results_dir).strip():
+            results_base = Path(cfg_results_dir.strip())
+            if not results_base.is_absolute():
+                results_base = self.base_path / results_base
+        else:
+            results_base = self.results_path
+
         # User-friendly hierarchy: every run is fully contained in its own directory.
-        # Results/
+        # <results_base>/
         #   <Scenario>/<SystemPrompt>/RUN_<run_id>/
         #     dsl/
         #     compiler/
-        runs_root = self.results_path / scenario_name / sp_name
+        runs_root = results_base / scenario_name / sp_name
         runs_root.mkdir(parents=True, exist_ok=True)
 
         self.run_id = datetime.now().strftime("%Y%m%d_%H%M%S")

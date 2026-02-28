@@ -1,0 +1,10 @@
+ServiceNavigation
+agent: moveTo serviceStartLocation
+agent: pick object
+agent: moveTo elevatorLocation
+agent: stop
+agent: moveTo elevatorLocation
+agent: stop
+agent: moveTo floorLocation
+agent: moveTo serviceGoalLocation
+agent: deposit object
