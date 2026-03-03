@@ -244,7 +244,7 @@ def fig01_success_rate_ci(run_df: pd.DataFrame, out_dir: Path):
     ax.set_ylim(0, 1.15)
     ax.set_ylabel("Success Rate")
     ax.set_xlabel("Configuration")
-    ax.set_title("Fig. 1 \u2014 Success Rate per Configuration (95 % Wilson CI)")
+    ax.set_title("Success Rate per Configuration (95 % Wilson CI)")
     _save(fig, out_dir, "fig01_success_rate_ci")
 
 
@@ -306,7 +306,7 @@ def fig02_main_effect_forest(run_df: pd.DataFrame, out_dir: Path):
     )
     ax.set_xlim(0, 1.05)
     ax.set_xlabel("Success Rate")
-    ax.set_title("Fig. 2 \u2014 Main-Effect Forest Plot")
+    ax.set_title("Main-Effect Forest Plot")
     ax.legend(loc="lower right", fontsize=9)
     _save(fig, out_dir, "fig02_main_effect_forest")
 
@@ -366,7 +366,7 @@ def fig03_factor_interaction(run_df: pd.DataFrame, out_dir: Path):
             ax.legend(fontsize=9)
 
     fig.suptitle(
-        "Fig. 3 \u2014 Factor Interaction: Model \u00d7 Few-Shot Examples \u00d7 Repair Prompt",
+        "Factor Interaction: Model \u00d7 Few-Shot Examples \u00d7 Repair Prompt",
         fontsize=13, y=1.02,
     )
     _save(fig, out_dir, "fig03_factor_interaction")
@@ -413,7 +413,7 @@ def fig04_prompt_scenario_heatmap(run_df: pd.DataFrame, out_dir: Path):
                 )
         plt.colorbar(im, ax=ax, label="Success Rate")
 
-    ax.set_title("Fig. 4 \u2014 Prompt \u00d7 Scenario Success Rate")
+    ax.set_title("Prompt \u00d7 Scenario Success Rate")
     ax.set_ylabel("Generative System Prompt")
     ax.set_xlabel("Scenario")
     _save(fig, out_dir, "fig04_prompt_scenario_heatmap")
@@ -484,7 +484,7 @@ def fig05_iterations_box_strip(run_df: pd.DataFrame, out_dir: Path):
     ax.set_xticklabels(labels, fontsize=9)
     ax.set_ylabel("Iteration of First Success")
     ax.set_xlabel("Configuration (success / total)")
-    ax.set_title("Fig. 5 \u2014 Iterations to Success (Pro-model Configs)")
+    ax.set_title("Iterations to Success (Pro-model Configs)")
     ax.yaxis.set_major_locator(plt.MaxNLocator(integer=True))
     ax.set_ylim(0.5, run_df[col].max() + 0.5 if run_df[col].notna().any() else 10.5)
     _save(fig, out_dir, "fig05_iterations_box_strip")
@@ -516,7 +516,7 @@ def fig06_error_convergence(iter_df: pd.DataFrame, out_dir: Path):
 
     ax.set_xlabel("Repair Iteration")
     ax.set_ylabel("Median Compiler Error Score")
-    ax.set_title("Fig. 6 \u2014 Error-Score Convergence by Configuration")
+    ax.set_title("Error-Score Convergence by Configuration")
     ax.legend(title="Config", fontsize=8, title_fontsize=9, ncol=2)
     ax.set_xticks(range(0, 11))
     _save(fig, out_dir, "fig06_error_convergence")
@@ -625,7 +625,7 @@ def fig07_error_flow(iter_df: pd.DataFrame, out_dir: Path):
     ax.set_yticklabels(cats, fontsize=10)
     ax.set_xlabel("Share of Total Errors (%)")
     ax.set_title(
-        f"Fig. 7 \u2014 Error-Category Flow: Generation \u2192 Post-Repair\n"
+        f"Error-Category Flow: Generation \u2192 Post-Repair\n"
         f"(failed runs, n={len(failed_keys)};  "
         f"initial total={int(init_total):,}, final total={int(final_total):,})",
         fontsize=12,
@@ -687,7 +687,7 @@ def fig08_scenario_difficulty(run_df: pd.DataFrame, out_dir: Path):  # noqa: kep
         ax.set_xticklabels(sc_short, fontsize=10)
         ax.set_xlabel("Scenario")
 
-    fig.suptitle("Fig. 8 \u2014 Scenario Difficulty Profile", fontsize=13, y=1.02)
+    fig.suptitle("Scenario Difficulty Profile", fontsize=13, y=1.02)
     _save(fig, out_dir, "fig08_scenario_difficulty")
 
 
