@@ -1,514 +1,226 @@
-# RESEARCH_PROJECT
+# LLM-Guided DSL Generation and Repair
 
-DSL Generator with Gemini API via Vertex AI - Automates the generation and refinement of domain-specific language code.
+A comparative study of LLM-guided code generation and iterative compiler-feedback repair for a domain-specific language (LIRAs DSL), using Google Gemini models via Vertex AI.
 
-This project runs an automated feedback loop:
+## Overview
 
-- Generate DSL with Vertex AI (Gemini)
-- Validate locally with a Java-based CLI compiler (JAR)
-- If compilation fails, send compiler output back to the model for repair (in a dedicated repair chat)
-- Repeat up to `max_iterations`
+This repository contains the experimental pipeline and analysis artifacts for a factorial study evaluating how **model choice**, **system prompt design**, **few-shot examples**, and **repair prompting strategies** affect the ability of large language models to generate compilable DSL code.
 
-## Setup Instructions
+The pipeline implements a generate–compile–repair loop:
 
-### 0. Local Prerequisites (Java)
+1. **Generate** — An LLM produces DSL code from a natural-language scenario description, guided by a system prompt and optional few-shot examples.
+2. **Compile** — The generated code is validated locally by a Java-based LIRAs compiler.
+3. **Repair** — If compilation fails, compiler output is fed into a dedicated repair chat session that iteratively fixes the code.
+4. **Repeat** — Steps 2–3 repeat up to a configurable `max_iterations` limit.
 
-You must have a Java runtime installed and accessible as `java` on your `PATH` so the script can run the compiler JAR:
+### Experimental Design
 
-```bash
-java -version
+The study uses a 2³ full-factorial design across 8 pipeline configurations:
+
+| Config | Model                | Repair Prompt | Few-Shot |
+| ------ | -------------------- | ------------- | -------- |
+| C1     | Gemini 2.5 Flash     | SPR1          | No       |
+| C2     | Gemini 2.5 Flash     | SPR1          | Yes      |
+| C3     | Gemini 2.5 Flash     | SPR2          | No       |
+| C4     | Gemini 2.5 Flash     | SPR2          | Yes      |
+| C5     | Gemini 3 Pro Preview | SPR1          | No       |
+| C6     | Gemini 3 Pro Preview | SPR1          | Yes      |
+| C7     | Gemini 3 Pro Preview | SPR2          | No       |
+| C8     | Gemini 3 Pro Preview | SPR2          | Yes      |
+
+Each configuration is run against 4 scenarios × 5 generation prompts × 3 shot levels = 60 runs, totaling 480 runs across all configurations.
+
+## Repository Structure
+
+```
+├── dsl_generator.py              # Main generation + repair pipeline
+├── dsl_generator_flash.py        # Lightweight fork optimized for Gemini 2.5 Flash
+├── config.json                   # Runtime configuration (single-run entry point)
+├── requirements.txt              # Python dependencies
+├── SPs/
+│   ├── Generative/               # Generation-stage system prompts (SP1–SP5)
+│   └── Repair/                   # Repair-stage system prompts (SPR1, SPR2)
+├── Shots/
+│   ├── Generative/               # Few-shot examples for generation
+│   │   ├── UserScenario_1.txt / AssistantScenario_1.txt
+│   │   └── UserScenario_2.txt / AssistantScenario_2.txt
+│   └── Repair/                   # Few-shot examples for repair
+│       └── UserScenario_3–5.txt / AssistantScenario_3–5.txt
+├── Scenarios/                    # Natural-language scenario descriptions
+│   ├── Scenario_011.txt
+│   ├── Scenario_016.txt
+│   ├── Scenario_029.txt
+│   └── Scenario_06.txt
+├── DSL/                          # Pre-generated DSL baselines (per scenario/prompt/shot)
+├── Runs/                         # Raw run outputs organized by configuration (C1–C8)
+│   └── C<n>/<Scenario>/<SP>/RUN_<timestamp>/
+│       ├── dsl/                  # Generated .LIRAs files per iteration
+│       ├── compiler/             # Compiler output per iteration
+│       └── run_metadata.json     # Full run telemetry and iteration log
+├── Report/
+│   ├── configs.csv               # Configuration factor matrix
+│   ├── Histories/                # Per-config run history CSVs (c1.csv–c8.csv)
+│   ├── Tables/                   # Summary tables (CSV + rendered PNG images)
+│   └── Figures/                  # Publication figures
+└── Utils/
+    ├── run_all_pairs.py          # Batch runner for all scenario/prompt combinations
+    ├── collect_run_history.py    # Extract run metadata into analysis-ready CSVs
+    ├── compile_run_histories.py  # Merge per-config CSVs into a combined dataset
+    ├── render_figures.py         # Generate publication figures from combined data
+    ├── render_tables.py          # Render CSV tables as formatted PNG images
+    ├── export_run_tables.py      # Export summary tables from combined data
+    ├── run_factorial_analysis.py # Statistical analysis (main effects, interactions)
+    └── run_SC_failure.py         # Supplementary failure analysis
 ```
 
-Install options:
+## Prerequisites
 
-- macOS (Homebrew):
-  - `brew install openjdk`
-  - Ensure `java` is on PATH (Homebrew prints the exact `PATH`/symlink instructions after install)
-- Ubuntu/Debian:
-  - `sudo apt-get update && sudo apt-get install -y default-jre`
-- Windows:
-  - Install a JDK (e.g., Temurin/OpenJDK) and ensure `java.exe` is available in PATH
+- **Python 3.9+**
+- **Java runtime** on `PATH` (required to run the LIRAs compiler JAR)
+- **Google Cloud** project with Vertex AI API enabled
 
-### 1. Google Cloud Project Setup
+## Setup
 
-1. **Create a Google Cloud Project** (if you don't have one):
-   - Go to [Google Cloud Console](https://console.cloud.google.com/)
-   - Click "Select a project" → "New Project"
-   - Enter a project name and click "Create"
-   - Note your Project ID (e.g., `aerobic-stream-483313-v6`)
-
-2. **Enable Vertex AI API**:
-   - In your Google Cloud Console, go to "APIs & Services" → "Library"
-   - Search for "Vertex AI API"
-   - Click on it and press "Enable"
-
-### 2. Create Service Account and Key
-
-1. **Create a Service Account**:
-   - Go to "IAM & Admin" → "Service Accounts"
-   - Click "Create Service Account"
-   - Enter a name (e.g., `research-project`)
-   - Click "Create and Continue"
-
-2. **Grant Permissions**:
-   - Add the role: "Vertex AI User"
-   - Click "Continue" → "Done"
-
-3. **Generate JSON Key**:
-   - Click on your newly created service account
-   - Go to "Keys" tab
-   - Click "Add Key" → "Create new key"
-   - Select "JSON" format
-   - Click "Create" - the key file will download automatically
-
-4. **Save the Key**:
-   - Rename the downloaded file to `key.json`
-   - **For shared projects**: Create a `keys/` directory and place it there: `RESEARCH_PROJECT/keys/key.json`
-   - **For personal use**: You can also place it in the project root: `RESEARCH_PROJECT/key.json`
-   - **Important**: Both `keys/` directory and `key.json` are in `.gitignore` and won't be committed to version control
-
-### 3. Create Python Virtual Environment
-
-1. **Create virtual environment**:
+1. **Install Python dependencies:**
 
    ```bash
    python -m venv venv
+   source venv/bin/activate    # Linux/macOS
+   venv\Scripts\activate       # Windows
+   pip install -r requirements.txt
    ```
 
-2. **Activate the virtual environment**:
-   - On Windows:
+2. **Configure Google Cloud credentials:**
 
-     ```bash
-     venv\Scripts\activate
-     ```
+   Place a Vertex AI service account JSON key at `keys/key.json` (gitignored). The script also supports Application Default Credentials via `gcloud auth application-default login`.
 
-   - On macOS/Linux:
-     ```bash
-     source venv/bin/activate
-     ```
+3. **Verify Java is available:**
 
-3. **Verify activation**:
-   - Your terminal prompt should now show `(venv)` at the beginning
+   ```bash
+   java -version
+   ```
 
-### 4. Install Dependencies
+## Usage
 
-```bash
-pip install -r requirements.txt
-```
+### Single Run
 
-### 5. Run the Generator
+Edit `config.json` and run:
 
 ```bash
 python dsl_generator.py
 ```
 
-The script will automatically detect and use the `key.json` file from either:
-
-1. `keys/key.json` (recommended for shared projects)
-2. `key.json` (root directory, for backward compatibility)
-
-## Alternative: Use gcloud CLI Authentication
-
-Instead of a service account key, you can use gcloud CLI:
-
-1. Install [Google Cloud SDK](https://cloud.google.com/sdk/docs/install)
-2. Run: `gcloud auth application-default login`
-3. Remove or rename `key.json` from the `keys/` directory
-4. The script will use your gcloud credentials instead
-
-## Project Structure
-
-```
-RESEARCH_PROJECT/
-├── dsl_generator.py          # Main generator script
-├── config.json               # Configuration file (edit this!)
-├── requirements.txt          # Python dependencies
-├── keys/                     # API keys directory (gitignored)
-│   ├── key.json              # Your Google Cloud credentials
-│   └── README.md             # Key setup instructions
-├── SPs/
-│   ├── Generative/           # Generation-stage system prompts
-│   │   ├── SP1.txt
-│   │   ├── SP2.txt
-│   │   └── ...
-│   └── Repair/               # Repair-stage system prompts
-│       ├── SystemPromptRepair1.txt
-│       ├── SystemPromptRepair2.txt
-│       └── ...
-├── Shots/                    # Few-shot learning examples
-│   ├── UserScenario_1.txt
-│   ├── AssistantScenario_1.txt
-│   └── ...
-├── Scenarios/                # Test scenarios to generate DSL code for
-│   ├── UserScenario_011.txt
-│   ├── UserScenario_016.txt
-│   └── ...
-└── Results/                  # Generated DSL code outputs and metadata
-    └── Runs/                  # Organized per-run output folders
-        └── <Scenario>/<SystemPrompt>/RUN_<timestamp>/
-            ├── dsl/           # Generated DSL outputs (.LIRAs)
-            ├── compiler/      # Compiler outputs per attempt (*.compiler.txt)
-            └── run_metadata.json
-```
-
-## How to Use the Generator
-
-### 1. Configure Your Generation Run
-
-Edit the `config.json` file to specify your configuration:
-
-**Simple Integer Format (Recommended):**
-
-```json
-{
-  "system_prompt": "Generative/SP1.txt",
-  "generation_model": "gemini-2.0-flash-lite-001",
-  "repair_model": "gemini-2.0-flash-lite-001",
-  "shots": 2,
-  "scenario": "UserScenario_011.txt",
-  "repair_prompt": "Repair/SystemPromptRepair1.txt",
-  "repair_shots": 0,
-  "compiler_jar": "Compiler/liras-compiler.jar",
-  "max_iterations": 10
-}
-```
-
-Optional:
-
-- **`repair_prompt`**: Repair-stage prompt template used only during refinement (when you paste compiler output). Defaults to `SPs/Repair/SystemPromptRepair1.txt` (fallback to legacy `SPs/RepairPrompt.txt` if present). You can provide either a filename under `SPs/Repair/`, a path relative to `SPs/`, a project-relative path, or an absolute path.
-
-Included templates:
-
-- `SPs/Repair/SystemPromptRepair1.txt`: Baseline repair guidance.
-- `SPs/Repair/SystemPromptRepair2.txt`: Alternative repair policy.
-- `SPs/Repair/SystemPromptRepair3.txt`: Lightweight repair variant.
-
-This will automatically load:
-
-- `Shots/UserScenario_1.txt` → `Shots/AssistantScenario_1.txt`
-- `Shots/UserScenario_2.txt` → `Shots/AssistantScenario_2.txt`
-
-**Advanced Format (Custom Shot Pairs):**
-
-```json
-{
-  "system_prompt": "Generative/SP1.txt",
-  "generation_model": "gemini-2.0-flash-lite-001",
-  "repair_model": "gemini-2.0-flash-lite-001",
-  "shots": [
-    {
-      "user": "UserScenario_1.txt",
-      "assistant": "AssistantScenario_1.txt"
-    },
-    {
-      "user": "UserScenario_2.txt",
-      "assistant": "AssistantScenario_2.txt"
-    }
-  ],
-  "scenario": "UserScenario_011.txt",
-  "repair_prompt": "Repair/SystemPromptRepair1.txt",
-  "repair_shots": 0,
-  "compiler_jar": "Compiler/liras-compiler.jar",
-  "max_iterations": 10
-}
-```
-
-**Configuration Options:**
-
-- **`system_prompt`**: Generation prompt file from `SPs/Generative/` (for example `Generative/SP3.txt`)
-- **`generation_model` (required)**: Vertex AI Gemini model name used for initial generation (e.g., `gemini-2.0-flash-lite-001`, `gemini-2.5-pro`)
-- **`repair_model` (required)**: Vertex AI Gemini model name used for repair iterations (can be the same as `generation_model`)
-- **`shots`**:
-  - **Integer**: Number of shot examples (e.g., `2` loads UserScenario_1.txt + AssistantScenario_1.txt, UserScenario_2.txt + AssistantScenario_2.txt from Shots/ directory)
-  - **Array**: Custom shot pairs with specific file names
-  - **0 or []**: Zero-shot learning (no examples)
-- **`scenario`**: The scenario file from `Scenarios/` directory to generate DSL code for
-- **`repair_prompt`**: Repair-stage system prompt used by the repair chat. Defaults to `SPs/Repair/SystemPromptRepair1.txt`. Recommended format is `Repair/<filename>.txt` (for example `Repair/SystemPromptRepair2.txt`).
-- **`repair_shots`**: Optional additional few-shots used only for the repair chat. Can be an integer (like `shots`) or an explicit list of `{user, assistant}` pairs. Use `0`/`[]` for none.
-- **`compiler_jar` (required)**: Path to the runnable compiler JAR used for validation (relative to project root or absolute path)
-- **`max_iterations` (required)**: Maximum number of generate→compile→repair attempts before stopping
-
-#### Available Gemini Models
-
-**Gemini 2.5 Models:**
-
-- **`gemini-2.5-pro`**: Most capable model for complex reasoning
-  - Input: 2M tokens | Output: 8,192 tokens
-  - Best for: Initial generation with complex DSL patterns
-- **`gemini-2.5-flash`**: Fast responses with good quality
-  - Input: 1M tokens | Output: 8,192 tokens
-  - Best for: Repair iterations or when speed matters
-
-**Gemini 3 Models (Preview):**
-
-- **`gemini-3-pro-preview-0205`**: Latest preview with enhanced reasoning
-  - Input: 2M tokens | Output: 8,192 tokens
-  - Features: Thinking mode, better code generation
-  - Best for: Experimental runs with cutting-edge capabilities
-- **`gemini-3-flash-preview`**: Fast generation with improved quality
-  - Input: 1M tokens | Output: 8,192 tokens
-  - Best for: High-volume experiments or rapid iteration
-
-**Recommended Configurations:**
-
-```json
-// Balanced: Quality generation + Fast repair
-{
-  "generation_model": "gemini-2.5-pro",
-  "repair_model": "gemini-2.5-flash"
-}
-
-// Latest: Test Gemini 3 capabilities
-{
-  "generation_model": "gemini-3-pro-preview-0205",
-  "repair_model": "gemini-3-pro-preview-0205"
-}
-```
-
-**Token Usage per Iteration:**
-
-- System Prompt: ~500-1,500 tokens
-- Few-shot Examples (2 shots): ~2,000-4,000 tokens
-- User Scenario: ~200-500 tokens
-- DSL Output: ~300-1,000 tokens
-- Compiler Feedback: ~100-500 tokens
-- **Total**: ~3,000-8,000 tokens (well within all model limits)
-
-### 2. Run the Generator
-
-Activate your virtual environment and run:
-
-```bash
-source venv/bin/activate  # On macOS/Linux
-python dsl_generator.py
-```
-
-### 3. Review the Context
-
-The generator will display:
-
-- System instruction
-- Chat history (few-shot examples)
-- Current scenario
-- Token counts
-
-**Type `y` to continue or `n` to abort.**
-
-### 4. Get Initial DSL Code
-
-The AI will generate DSL code based on your configuration, validate it with the local compiler JAR, and automatically repair on failure.
-
-Each attempt is saved under a dedicated run directory:
-
-```
-Results/Runs/<Scenario>/<SystemPrompt>/RUN_<timestamp>/
-  dsl/ITER0_<timestamp>.LIRAs
-  compiler/ITER0_<timestamp>.LIRAs.compiler.txt
-  run_metadata.json
-```
-
-### 5. Automated Repair Loop
-
-On each iteration:
-
-- The script saves the raw model output (no sanitization) as a `.LIRAs` file.
-- Runs: `java -jar <compiler_jar> <dsl_file>`
-- If compilation fails, the combined `stdout+stderr` is fed into a dedicated repair chat.
-
-Repair chat methodology:
-
-- A new conversation is created whose **system prompt** is the selected `repair_prompt` file.
-- Each repair iteration sends a **single user message** that concatenates:
-  - the generation system prompt
-  - the generation scenario
-  - the previous DSL output
-  - the compiler output
-- Repair iterations persist within the same repair chat session.
-
-Stopping conditions:
-
-- Success when the compiler returns exit code `0`, OR when the compiler emits no output (empty `stdout+stderr`).
-- Stops after `max_iterations` attempts.
-- If validation cannot be performed (missing `java`, missing JAR, missing DSL file, or compiler timeout), the run stops and does not attempt LLM repair.
-
-### 6. Results
-
-Each run produces a single `run_metadata.json` that is updated over time with telemetry, iteration outcomes, and a compact summary.
-
-## Example Workflows
-
-### Zero-Shot Learning (No Examples)
-
-```json
-{
-  "system_prompt": "Generative/SP1.txt",
-  "shots": 0,
-  "scenario": "UserScenario_011.txt"
-}
-```
-
-### One-Shot Learning (One Example)
-
-```json
-{
-  "system_prompt": "Generative/SP2.txt",
-  "shots": 1,
-  "scenario": "UserScenario_016.txt"
-}
-```
-
-This automatically loads `UserScenario_1.txt` + `AssistantScenario_1.txt` as chat history.
-
-### Few-Shot Learning (Multiple Examples)
-
-```json
-{
-  "system_prompt": "Generative/SP3.txt",
-  "shots": 2,
-  "scenario": "UserScenario_029.txt"
-}
-```
-
-This automatically loads:
-
-- `UserScenario_1.txt` + `AssistantScenario_1.txt`
-- `UserScenario_2.txt` + `AssistantScenario_2.txt`
-
-### Custom Shot Pairs (Advanced)
-
-```json
-{
-  "system_prompt": "Generative/SP4.txt",
-  "shots": [
-    {
-      "user": "UserScenario_1.txt",
-      "assistant": "AssistantScenario_1.txt"
-    },
-    {
-      "user": "CustomScenario.txt",
-      "assistant": "CustomResponse.txt"
-    }
-  ],
-  "scenario": "UserScenario_06.txt"
-}
-```
-
-## Batch Runs (run_all_pairs)
-
-Use `Utils/run_all_pairs.py` to execute all Scenario/SystemPrompt pairs with a shared template config.
-
-Common commands:
+**`config.json` reference:**
+
+| Key                       | Type        | Description                                                              |
+| ------------------------- | ----------- | ------------------------------------------------------------------------ |
+| `system_prompt`           | string      | Generation prompt from `SPs/Generative/` (e.g., `"Generative/SP3.txt"`)  |
+| `generation_model`        | string      | Vertex AI model for generation (e.g., `"gemini-3-pro-preview"`)          |
+| `repair_model`            | string      | Vertex AI model for repair iterations                                    |
+| `shots`                   | int \| list | Few-shot example count (0, 1, 2) or explicit `[{user, assistant}]` pairs |
+| `scenario`                | string      | Scenario file from `Scenarios/`                                          |
+| `repair_prompt`           | string      | Repair system prompt from `SPs/Repair/` (e.g., `"Repair/SPR1.txt"`)      |
+| `repair_shots`            | int \| list | Few-shot examples for the repair chat (default: 0)                       |
+| `compiler_jar`            | string      | Path to the LIRAs compiler JAR                                           |
+| `max_iterations`          | int         | Maximum generate→compile→repair attempts                                 |
+| `generation_temperature`  | float       | Sampling temperature for generation (default: 1.0)                       |
+| `repair_temperature`      | float       | Sampling temperature for repair (default: 0.2)                           |
+| `generation_only`         | bool        | Skip compile/repair, only save generated DSL                             |
+| `use_generated_dsl_cache` | bool        | Load DSL from cache instead of generating                                |
+| `generated_dsl_source`    | string      | Cache source: `"generated_cache"` or `"dsl_folder"`                      |
+| `results_dir`             | string      | Override output directory (e.g., `"Runs/C5"`)                            |
+
+### Batch Runs
+
+Run all scenario × prompt × shot combinations:
 
 ```bash
 python Utils/run_all_pairs.py
 python Utils/run_all_pairs.py --shots 0,1,2
 python Utils/run_all_pairs.py --generation-only
 python Utils/run_all_pairs.py --disable-generation --shots 0,1,2
-python Utils/run_all_pairs.py --disable-generation --shots 0,1,2 --compiler-timeout 120
-python Utils/run_all_pairs.py --disable-generation --shots 0,1,2 --compiler-timeout 120 --inter-run-delay 2
 python Utils/run_all_pairs.py --list-only
 ```
 
-Notes:
+| Flag                   | Description                                          |
+| ---------------------- | ---------------------------------------------------- |
+| `--generation-only`    | Save generated DSL without compiling                 |
+| `--disable-generation` | Load DSL from cache and run compile/repair only      |
+| `--compiler-timeout`   | Override compiler timeout (seconds)                  |
+| `--inter-run-delay`    | Pause between runs to reduce API rate-limit pressure |
+| `--list-only`          | List planned runs without executing                  |
 
-- `--generation-only` skips compile/repair and only saves the generated DSL.
-- `--disable-generation` loads DSL from cache (e.g., `DSL/Scenario_6/SP1_Shot0.txt`) and runs repair/compile.
-- `--compiler-timeout` overrides compiler timeout in seconds for the batch run.
-- `--inter-run-delay` adds a pause between runs to reduce resource pressure and transient timeouts.
+## Analysis Pipeline
 
-## Run History Export (collect_run_history)
+### 1. Collect Run Histories
 
-The `Utils/collect_run_history.py` script scans all `run_metadata.json` files under `Results/` and writes a per-configuration CSV in `Report/Histories/`:
+Extract structured CSVs from raw `run_metadata.json` files:
 
 ```bash
 python Utils/collect_run_history.py --out Report/Histories/c1.csv
 ```
 
-Output:
+### 2. Combine Configurations
 
-- `Report/Histories/c1.csv`, `Report/Histories/c2.csv`, ... (one file per configuration)
-
-The CSV includes:
-
-- Run metadata (scenario, system prompt, shots, models, timestamps, status).
-- Cache provenance (cache source and resolved DSL path).
-- Iteration diagnostics (compiler error/warning counts, error score, validation results).
-- Derived metrics (AUC error score, improvement ratios, monotonicity, duration).
-
-## Multi-Configuration Comparison Workflow
-
-When each pipeline configuration has its own run-history CSV, use the comparison utilities in `Utils/`:
-
-1. Collect one CSV per configuration (use `c1.csv` to `cXX.csv` IDs):
+Merge all per-config CSVs into a single comparative dataset:
 
 ```bash
-python Utils/collect_run_history.py --out Report/Histories/c1.csv
-python Utils/collect_run_history.py --out Report/Histories/c2.csv
-```
-
-2. (Optional) Build one combined comparison dataset:
-
-```bash
-./venv/bin/python Utils/compile_run_histories.py \
-  --input-glob 'Report/Histories/c*.csv' \
+python Utils/compile_run_histories.py \
+  --input-glob "Report/Histories/c*.csv" \
   --outcsv Report/Histories/combined_run_histories.csv
 ```
 
-3. Generate cross-configuration viability figures directly from all CSVs:
+### 3. Generate Tables and Figures
 
 ```bash
-./venv/bin/python Utils/plot_run_history.py \
-  --csv-glob 'Report/Histories/c*.csv' \
-  --outdir Report/Figures
+python Utils/export_run_tables.py
+python Utils/render_figures.py
+python Utils/render_tables.py
+python Utils/run_factorial_analysis.py
 ```
 
-Generated comparison figures:
+### Output Artifacts
 
-- `fig01_viability_funnel.png`
-- `fig02_success_rate_with_ci.png`
-- `fig03_iterations_to_success_ecdf.png`
-- `fig04_cost_to_success.png`
-- `config_mapping.csv` (uses your config IDs directly, e.g., `c1`, `c2`, ...)
+**Tables** (`Report/Tables/`):
 
-## Troubleshooting
+| File                                     | Description                                           |
+| ---------------------------------------- | ----------------------------------------------------- |
+| `table00_study_summary.csv`              | Overall study design and run counts                   |
+| `table01_config_scorecard.csv`           | Per-config success rate, iteration stats, token usage |
+| `table02_prompt_scenario_matrix.csv`     | Prompt × scenario success breakdown                   |
+| `table03_time_to_success.csv`            | Iterations-to-first-success distribution              |
+| `table04_parameter_effects.csv`          | Main-effect sizes per experimental factor             |
+| `table05_failure_by_prompt_scenario.csv` | Failure analysis by prompt and scenario               |
+| `table06_status_breakdown.csv`           | Run outcome status distribution                       |
 
-**Error: config.json not found**
+**Figures** (`Report/Figures/`):
 
-- Make sure `config.json` exists in the project root directory
+| Figure                              | Description                                        |
+| ----------------------------------- | -------------------------------------------------- |
+| `fig01_success_rate_ci.png`         | Success rate per configuration with 95% Wilson CI  |
+| `fig02_main_effect_forest.png`      | Main-effect forest plot                            |
+| `fig03_factor_interaction.png`      | Model × few-shot × repair prompt interaction       |
+| `fig04_prompt_scenario_heatmap.png` | Prompt × scenario success-rate heatmap             |
+| `fig05_iterations_box_strip.png`    | Iterations to success distribution                 |
+| `fig06_error_convergence.png`       | Error-score convergence by configuration           |
+| `fig07_error_flow.png`              | Error-category flow from generation to post-repair |
+| `fig08_scenario_difficulty.png`     | Scenario difficulty profile                        |
 
-**Error: Authentication failed**
+## Architecture
 
-- Verify `key.json` is present and valid
-- Check that Vertex AI API is enabled in your Google Cloud project
-- Ensure the service account has "Vertex AI User" role
+### Generation Phase
 
-**Error: File not found (scenarios/prompts)**
+The generation model receives a **system prompt** (one of SP1–SP5), optional **few-shot examples** (user/assistant scenario pairs injected as chat history), and the **target scenario** as a user message. The model produces raw DSL code, which is extracted by stripping markdown fences and preamble.
 
-- Check that file names in `config.json` match exactly (case-sensitive)
-- Verify files exist in the correct directories (`SPs/`, `Shots/`, `Scenarios/`)
+### Repair Phase
 
-**Error: `java` not found / compiler JAR cannot run**
+A **separate chat session** is created with a repair-specific system prompt (SPR1 or SPR2). Each repair turn sends the failed DSL plus compiler output as a single user message. The repair chat is **stateful** by default — prior repair attempts accumulate in the conversation context, with a sliding window of the last 3 attempts to prevent regression. Repair uses lower temperature (0.2) to favor deterministic fixes.
 
-- Ensure `java -version` works
-- Ensure `compiler_jar` in `config.json` points to an existing JAR
+### Telemetry
 
-## Deactivate Virtual Environment
+Every run produces a `run_metadata.json` file capturing:
 
-When you're done:
-
-```bash
-deactivate
-```
-
-- `dsl_generator.py` - Main script
-- `key.json` - Service account credentials (not committed to git)
-
-## Configuration
-
-Edit `config.json` to set:
-
-- System prompt file
-- Few-shot example pairs
-- Target scenario file
-- Compiler JAR path (`compiler_jar`)
-- Maximum iterations (`max_iterations`)
+- Configuration parameters and model identifiers
+- Per-iteration DSL paths, compiler output, error scores, and validation results
+- Approximate token usage and timing
+- Final status (`success`, `max_iterations_reached`, `setup_error`, `crashed`)
