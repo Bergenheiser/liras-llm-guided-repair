@@ -6,6 +6,9 @@ A comparative study of LLM-guided code generation and iterative compiler-feedbac
 
 This repository contains the experimental pipeline and analysis artifacts for a factorial study evaluating how **model choice**, **system prompt design**, **few-shot examples**, and **repair prompting strategies** affect the ability of large language models to generate compilable DSL code.
 
+
+> **📄 Read the full paper:** A detailed analysis of our findings, methodology, and structural limits of the repair pipeline is available in our final report: [`Report/LLM_Guided_DSL_Repair_Report.pdf`](Report/LLM_Guided_DSL_Repair_Report.pdf).
+
 The pipeline implements a generate–compile–repair loop:
 
 1. **Generate** — An LLM produces DSL code from a natural-language scenario description, guided by a system prompt and optional few-shot examples.
@@ -58,10 +61,11 @@ Each configuration is run against 4 scenarios × 5 generation prompts × 3 shot 
 │       ├── compiler/             # Compiler output per iteration
 │       └── run_metadata.json     # Full run telemetry and iteration log
 ├── Report/
-│   ├── configs.csv               # Configuration factor matrix
-│   ├── Histories/                # Per-config run history CSVs (c1.csv–c8.csv)
-│   ├── Tables/                   # Summary tables (CSV + rendered PNG images)
-│   └── Figures/                  # Publication figures
+|   ├── LLM_Guided_DSL_Repair_Report.pdf  # Final research paper and study findings
+│   ├── configs.csv                       # Configuration factor matrix
+│   ├── Histories/                        # Per-config run history CSVs (c1.csv–c8.csv)
+│   ├── Tables/                           # Summary tables (CSV + rendered PNG images)
+│   └── Figures/                          # Publication figures
 └── Utils/
     ├── run_all_pairs.py          # Batch runner for all scenario/prompt combinations
     ├── collect_run_history.py    # Extract run metadata into analysis-ready CSVs
